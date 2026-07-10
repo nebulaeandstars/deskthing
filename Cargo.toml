@@ -1,0 +1,9 @@
+[package]
+name = "deskthing"
+version = "0.1.0"
+edition = "2024"
+author = "Laura Powles <laura@laurapowles.com>"
+
+[dependencies]
+macroquad = "0.4.15"
+rayon = "1.12.0"
