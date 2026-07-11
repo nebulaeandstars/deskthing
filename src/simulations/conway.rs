@@ -2,8 +2,6 @@ use crate::buffer::DoubleBuffer;
 use crate::frame::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
-use crate::DrawFrame;
-use crate::DrawFrameLayout;
 
 use macroquad::prelude::*;
 use rayon::prelude::*;
@@ -103,7 +101,6 @@ impl Default for Cell {
 
 #[derive(Clone, Debug)]
 pub struct Conway {
-    layout: DrawFrameLayout,
     rule: Rule,
     buffer: DoubleBuffer<Grid<Cell>>,
     width: usize,
@@ -112,19 +109,10 @@ pub struct Conway {
 }
 
 impl Conway {
-    fn new(
-        mut layout: DrawFrameLayout,
-        rulestring: &str,
-        grid: Grid<Cell>,
-        width: usize,
-        height: usize,
-    ) -> Self {
-        layout.refresh();
-
+    fn new(rulestring: &str, grid: Grid<Cell>, width: usize, height: usize) -> Self {
         let buffer = DoubleBuffer::new(grid);
 
         Self {
-            layout,
             rule: Rule::from_rulestring(rulestring),
             buffer,
             width,
@@ -133,13 +121,7 @@ impl Conway {
         }
     }
 
-    pub fn random(
-        layout: DrawFrameLayout,
-        rulestring: &str,
-        fill_percent: f32,
-        width: usize,
-        height: usize,
-    ) -> Self {
+    pub fn random(rulestring: &str, fill_percent: f32, width: usize, height: usize) -> Self {
         let fill_divisor = 2. / (1. - fill_percent);
 
         let fill_offset_x = width as f32 / fill_divisor;
@@ -161,7 +143,7 @@ impl Conway {
         };
 
         let grid = Grid::from_generator(width, height, generator);
-        Self::new(layout, rulestring, grid, width, height)
+        Self::new(rulestring, grid, width, height)
     }
 
     pub fn apply_rule(&mut self, rule: &Rule) {
@@ -191,31 +173,21 @@ impl Conway {
     fn cell(&self, x: isize, y: isize) -> Option<&Cell> {
         self.buffer.state().get(x, y)
     }
-
-    fn frame(&self) -> &DrawFrame {
-        &self.layout.frame
-    }
 }
 
 impl Draw for Conway {
     fn draw(&self, _frame: &mut Frame) {
-        let column_width = self.frame().width() / self.width as f32;
-        let row_height = self.frame().height() / self.height as f32;
-
         for column in 0..self.width as isize {
-            let cell_x = self.frame().x() + (column as f32 * column_width);
             for row in 0..self.height as isize {
-                let cell_y = self.frame().y() + (row as f32 * row_height);
-
                 let cell = self.cell(column, row).unwrap();
 
                 if cell.is_alive() {
-                    draw_rectangle(cell_x, cell_y, column_width, row_height, ALIVE_COLOR);
+                    draw_rectangle(column as f32, row as f32, 1., 1., ALIVE_COLOR);
                 } else {
                     if cell.ghost.is_some_and(|ghost| ghost < 10) {
                         let alpha = 1.0 - ((cell.ghost.unwrap() as f32 + 1.) / 5.);
                         let color = GHOST_COLOR.with_alpha(alpha);
-                        draw_rectangle(cell_x, cell_y, column_width, row_height, color);
+                        draw_rectangle(column as f32, row as f32, 1., 1., color);
                     }
                 }
             }
@@ -225,12 +197,16 @@ impl Draw for Conway {
 
 impl Update for Conway {
     fn update(&mut self, _frame: &Frame) {
-        self.layout.refresh();
-
         let update_start = Instant::now();
         if update_start - self.last_update > UPDATE_INTERVAL {
             self.apply_rule(&self.rule.clone());
             self.last_update = update_start;
         }
+    }
+}
+
+impl HasSize for Conway {
+    fn size(&self) -> Vec2 {
+        vec2(self.width as f32, self.height as f32)
     }
 }

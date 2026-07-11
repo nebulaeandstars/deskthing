@@ -1,9 +1,7 @@
 use crate::buffer::DoubleBuffer;
-use crate::frame::DrawFrameLayout;
 use crate::frame::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
-use crate::DrawFrame;
 
 use macroquad::prelude::*;
 use rayon::prelude::*;
@@ -85,17 +83,17 @@ impl Creature {
         }
     }
 
-    pub fn clamp_to_frame(&mut self, frame: &DrawFrame) {
+    pub fn clamp_to_frame(&mut self, sim_width: f32, sim_height: f32) {
         if self.pos.x < 1. {
             self.pos.x = 1.;
-        } else if self.pos.x > frame.width() - 1. {
-            self.pos.x = frame.width() - 1.;
+        } else if self.pos.x > sim_width - 1. {
+            self.pos.x = sim_width - 1.;
         }
 
         if self.pos.y < 1. {
             self.pos.y = 1.;
-        } else if self.pos.y > frame.height() - 1. {
-            self.pos.y = frame.height() - 1.;
+        } else if self.pos.y > sim_height - 1. {
+            self.pos.y = sim_height - 1.;
         }
     }
 
@@ -111,7 +109,8 @@ impl Creature {
         &self,
         deltatime: Duration,
         neighbours: impl Iterator<Item = &'a Creature>,
-        frame: &DrawFrame,
+        sim_width: f32,
+        sim_height: f32,
     ) -> Self {
         let mut new_creature = self.clone();
         let mut acceleration = Vec2::new(0., 0.);
@@ -144,16 +143,16 @@ impl Creature {
         if self.pos.x < EDGE_AVOIDANCE_DISTANCE {
             acceleration.x +=
                 EDGE_AVOIDANCE_FACTOR * (EDGE_AVOIDANCE_DISTANCE / self.pos.x).powi(2);
-        } else if self.pos.x > frame.width() - EDGE_AVOIDANCE_DISTANCE {
+        } else if self.pos.x > sim_width - EDGE_AVOIDANCE_DISTANCE {
             acceleration.x -= EDGE_AVOIDANCE_FACTOR
-                * (EDGE_AVOIDANCE_DISTANCE / (frame.width() - self.pos.x)).powi(2);
+                * (EDGE_AVOIDANCE_DISTANCE / (sim_width - self.pos.x)).powi(2);
         }
         if self.pos.y < EDGE_AVOIDANCE_DISTANCE {
             acceleration.y +=
                 EDGE_AVOIDANCE_FACTOR * (EDGE_AVOIDANCE_DISTANCE / self.pos.y).powi(2);
-        } else if self.pos.y > frame.height() - EDGE_AVOIDANCE_DISTANCE {
+        } else if self.pos.y > sim_height - EDGE_AVOIDANCE_DISTANCE {
             acceleration.y -= EDGE_AVOIDANCE_FACTOR
-                * (EDGE_AVOIDANCE_DISTANCE / (frame.height() - self.pos.y)).powi(2);
+                * (EDGE_AVOIDANCE_DISTANCE / (sim_height - self.pos.y)).powi(2);
         }
 
         // Update velocity
@@ -162,12 +161,12 @@ impl Creature {
 
         // Update position
         new_creature.pos += new_creature.vel * deltatime.as_secs_f32();
-        new_creature.clamp_to_frame(frame);
+        new_creature.clamp_to_frame(sim_width, sim_height);
 
         new_creature
     }
 
-    pub fn draw(&self, frame: DrawFrame) {
+    pub fn draw(&self) {
         // draw_circle(
         //     self.pos.x + frame.x(),
         //     self.pos.y + frame.y(),
@@ -176,8 +175,8 @@ impl Creature {
         // );
 
         draw_rectangle(
-            self.pos.x + frame.x() - self.size / 2.,
-            self.pos.y + frame.y() - self.size / 2.,
+            self.pos.x - self.size / 2.,
+            self.pos.y - self.size / 2.,
             self.size,
             self.size,
             self.species.color().with_alpha(0.75),
@@ -186,50 +185,48 @@ impl Creature {
 }
 
 pub struct Colorlife {
-    layout: DrawFrameLayout,
+    sim_width: f32,
+    sim_height: f32,
     creatures: DoubleBuffer<Vec<Creature>>,
     chunks: Grid<Vec<usize>>,
     last_update: Instant,
 }
 
 impl Colorlife {
-    pub fn new(mut layout: DrawFrameLayout, creatures: Vec<Creature>) -> Self {
-        layout.refresh();
-
+    pub fn new(creatures: Vec<Creature>, sim_width: f32, sim_height: f32) -> Self {
         let creatures = DoubleBuffer::new(creatures);
 
         let ideal_chunk_size = MAX_VISION_DISTANCE;
-        let columns = (layout.frame.width() / ideal_chunk_size).floor() as usize;
-        let rows = (layout.frame.height() / ideal_chunk_size).floor() as usize;
+        let columns = (sim_width / ideal_chunk_size).floor() as usize;
+        let rows = (sim_height / ideal_chunk_size).floor() as usize;
 
         Self {
-            layout,
+            sim_width,
+            sim_height,
             creatures,
             chunks: Grid::with_defaults(columns, rows),
             last_update: Instant::now(),
         }
     }
 
-    pub fn init(mut layout: DrawFrameLayout, num_creatures: usize) -> Self {
-        layout.refresh();
-
+    pub fn init(num_creatures: usize, sim_width: f32, sim_height: f32) -> Self {
         let mut creatures = Vec::new();
 
         for i in 0..num_creatures {
-            let x = rand::gen_range(100., layout.frame.width() - 100.);
-            let y = rand::gen_range(100., layout.frame.height() - 100.);
+            let x = rand::gen_range(100., sim_width - 100.);
+            let y = rand::gen_range(100., sim_height - 100.);
             let size = rand::gen_range(5., 5.);
             let species = CreatureType::random();
             creatures.push(Creature::new(i, x, y, size, species));
         }
 
-        Self::new(layout, creatures)
+        Self::new(creatures, sim_width, sim_height)
     }
 
     fn update_chunks(&mut self) {
         let ideal_chunk_size = MAX_VISION_DISTANCE;
-        let columns = (self.frame().width() / ideal_chunk_size).floor();
-        let rows = (self.frame().height() / ideal_chunk_size).floor();
+        let columns = (self.sim_width / ideal_chunk_size).floor();
+        let rows = (self.sim_height / ideal_chunk_size).floor();
 
         // Reset all chunks.
         for chunk in self.chunks.iter_mut() {
@@ -242,24 +239,21 @@ impl Colorlife {
 
         // Register all creatures within their current chunks.
         for creature in self.creatures.state() {
-            if let Some(chunk) = self
-                .chunks
-                .get_mut_by_pos(creature.pos + self.frame().pos(), self.frame())
-            {
+            if let Some(chunk) = self.chunks.get_mut_by_pos(
+                creature.pos,
+                vec2(0., 0.),
+                vec2(self.sim_width, self.sim_height),
+            ) {
                 chunk.push(creature.index);
             }
         }
-    }
-
-    fn frame(&self) -> DrawFrame {
-        self.layout.frame
     }
 }
 
 impl Draw for Colorlife {
     fn draw(&self, _frame: &mut Frame) {
         for creature in self.creatures.state() {
-            creature.draw(self.frame());
+            creature.draw();
         }
     }
 }
@@ -269,8 +263,6 @@ impl Update for Colorlife {
         let update_start = Instant::now();
         let deltatime = update_start - self.last_update;
 
-        self.layout.refresh();
-        let frame = self.frame();
         self.update_chunks();
 
         let (creatures, chunks) = (&mut self.creatures, &self.chunks);
@@ -283,16 +275,28 @@ impl Update for Colorlife {
                 let old_creature = &state[i];
 
                 let neighbours = chunks
-                    .get_neighbourhood_at_pos(old_creature.pos + frame.pos(), 1, frame)
+                    .get_neighbourhood_at_pos(
+                        old_creature.pos,
+                        1,
+                        vec2(0., 0.),
+                        vec2(self.sim_width, self.sim_height),
+                    )
                     .flat_map(|chunk| chunk.iter())
                     .copied()
                     .filter(|&j| j != i)
                     .map(|j| &state[j]);
 
-                *new_creature = old_creature.update(deltatime, neighbours, &frame);
+                *new_creature =
+                    old_creature.update(deltatime, neighbours, self.sim_width, self.sim_height);
             });
 
         self.creatures.swap();
         self.last_update = update_start;
+    }
+}
+
+impl HasSize for Colorlife {
+    fn size(&self) -> Vec2 {
+        vec2(self.sim_width, self.sim_height)
     }
 }

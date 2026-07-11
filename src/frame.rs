@@ -104,7 +104,11 @@ impl<T: Update> Component<T> {
 
 impl<T: Draw> Component<T> {
     pub fn draw(&mut self) {
-        // Render the component to the camera,
+        // Start using the component's camera,
+        set_camera(&self.frame.camera);
+        clear_background(BLANK);
+
+        // render the internal drawable object to the camera,
         self.inner.draw(&mut self.frame);
 
         // then draw it.

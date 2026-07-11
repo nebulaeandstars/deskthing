@@ -1,9 +1,7 @@
 use crate::buffer::DoubleBuffer;
-use crate::frame::DrawFrameLayout;
 use crate::frame::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
-use crate::DrawFrame;
 
 use macroquad::prelude::*;
 use rand::RandomRange;
@@ -56,17 +54,17 @@ impl Boid {
         self.vel.normalize()
     }
 
-    pub fn clamp_to_frame(&mut self, frame: &DrawFrame) {
+    pub fn clamp_to_frame(&mut self, sim_width: f32, sim_height: f32) {
         if self.pos.x < 1. {
             self.pos.x = 1.;
-        } else if self.pos.x > frame.width() - 1. {
-            self.pos.x = frame.width() - 1.;
+        } else if self.pos.x > sim_width - 1. {
+            self.pos.x = sim_width - 1.;
         }
 
         if self.pos.y < 1. {
             self.pos.y = 1.;
-        } else if self.pos.y > frame.height() - 1. {
-            self.pos.y = frame.height() - 1.;
+        } else if self.pos.y > sim_height - 1. {
+            self.pos.y = sim_height - 1.;
         }
     }
 
@@ -82,7 +80,8 @@ impl Boid {
         &self,
         deltatime: Duration,
         neighbours: impl Iterator<Item = &'a Boid>,
-        frame: &DrawFrame,
+        sim_width: f32,
+        sim_height: f32,
     ) -> Self {
         let mut new_boid = self.clone();
         let mut acceleration = Vec2::new(0., 0.);
@@ -140,16 +139,16 @@ impl Boid {
         if self.pos.x < BOID_EDGE_AVOIDANCE_DISTANCE {
             acceleration.x +=
                 BOID_EDGE_AVOIDANCE_FACTOR * (BOID_EDGE_AVOIDANCE_DISTANCE / self.pos.x).powi(2);
-        } else if self.pos.x > frame.width() - BOID_EDGE_AVOIDANCE_DISTANCE {
+        } else if self.pos.x > sim_width - BOID_EDGE_AVOIDANCE_DISTANCE {
             acceleration.x -= BOID_EDGE_AVOIDANCE_FACTOR
-                * (BOID_EDGE_AVOIDANCE_DISTANCE / (frame.width() - self.pos.x)).powi(2);
+                * (BOID_EDGE_AVOIDANCE_DISTANCE / (sim_width - self.pos.x)).powi(2);
         }
         if self.pos.y < BOID_EDGE_AVOIDANCE_DISTANCE {
             acceleration.y +=
                 BOID_EDGE_AVOIDANCE_FACTOR * (BOID_EDGE_AVOIDANCE_DISTANCE / self.pos.y).powi(2);
-        } else if self.pos.y > frame.height() - BOID_EDGE_AVOIDANCE_DISTANCE {
+        } else if self.pos.y > sim_height - BOID_EDGE_AVOIDANCE_DISTANCE {
             acceleration.y -= BOID_EDGE_AVOIDANCE_FACTOR
-                * (BOID_EDGE_AVOIDANCE_DISTANCE / (frame.height() - self.pos.y)).powi(2);
+                * (BOID_EDGE_AVOIDANCE_DISTANCE / (sim_height - self.pos.y)).powi(2);
         }
 
         // Update velocity
@@ -158,21 +157,17 @@ impl Boid {
 
         // Update position
         new_boid.pos += new_boid.vel * deltatime.as_secs_f32();
-        new_boid.clamp_to_frame(frame);
+        new_boid.clamp_to_frame(sim_width, sim_height);
 
         new_boid
     }
 
-    pub fn draw(&self, frame: DrawFrame) {
+    pub fn draw(&self) {
         let heading = self.heading();
 
-        let v1 = frame.pos() + self.pos + heading.rotate(Vec2::new(BOID_HEIGHT / 2.0, 0.0));
-        let v2 = frame.pos()
-            + self.pos
-            + heading.rotate(Vec2::new(-BOID_HEIGHT / 2.0, BOID_WIDTH / 2.0));
-        let v3 = frame.pos()
-            + self.pos
-            + heading.rotate(Vec2::new(-BOID_HEIGHT / 2.0, -BOID_WIDTH / 2.0));
+        let v1 = self.pos + heading.rotate(Vec2::new(BOID_HEIGHT / 2.0, 0.0));
+        let v2 = self.pos + heading.rotate(Vec2::new(-BOID_HEIGHT / 2.0, BOID_WIDTH / 2.0));
+        let v3 = self.pos + heading.rotate(Vec2::new(-BOID_HEIGHT / 2.0, -BOID_WIDTH / 2.0));
 
         draw_triangle(v1, v2, v3, BOID_COLOR);
     }
@@ -185,49 +180,47 @@ impl PartialEq for Boid {
 }
 
 pub struct Boids {
-    layout: DrawFrameLayout,
+    sim_width: f32,
+    sim_height: f32,
     boids: DoubleBuffer<Vec<Boid>>,
     chunks: Grid<Vec<usize>>,
     last_update: Instant,
 }
 
 impl Boids {
-    pub fn new(mut layout: DrawFrameLayout, boids: Vec<Boid>) -> Self {
-        layout.refresh();
-
+    pub fn new(boids: Vec<Boid>, sim_width: f32, sim_height: f32) -> Self {
         let boids = DoubleBuffer::new(boids);
 
         let ideal_chunk_size = MAX_VISION_DISTANCE;
-        let columns = (layout.frame.width() / ideal_chunk_size).floor() as usize;
-        let rows = (layout.frame.height() / ideal_chunk_size).floor() as usize;
+        let columns = (sim_width / ideal_chunk_size).floor() as usize;
+        let rows = (sim_height / ideal_chunk_size).floor() as usize;
 
         Self {
-            layout,
+            sim_width,
+            sim_height,
             boids,
             chunks: Grid::with_defaults(columns, rows),
             last_update: Instant::now(),
         }
     }
 
-    pub fn init(mut layout: DrawFrameLayout, num_boids: usize) -> Self {
-        layout.refresh();
-
+    pub fn init(num_boids: usize, sim_width: f32, sim_height: f32) -> Self {
         let mut boids = Vec::new();
 
         for i in 0..num_boids {
-            let x = rand::gen_range(100., layout.frame.width() - 100.);
-            let y = rand::gen_range(100., layout.frame.height() - 100.);
+            let x = rand::gen_range(10., sim_width - 10.);
+            let y = rand::gen_range(10., sim_height - 10.);
             let heading = rand::gen_range(0.0, PI * 2.0);
             boids.push(Boid::new(i, x, y, heading));
         }
 
-        Self::new(layout, boids)
+        Self::new(boids, sim_width, sim_height)
     }
 
     fn update_chunks(&mut self) {
         let ideal_chunk_size = MAX_VISION_DISTANCE;
-        let columns = (self.frame().width() / ideal_chunk_size).floor();
-        let rows = (self.frame().height() / ideal_chunk_size).floor();
+        let columns = (self.sim_width / ideal_chunk_size).floor();
+        let rows = (self.sim_height / ideal_chunk_size).floor();
 
         // Reset all chunks.
         for chunk in self.chunks.iter_mut() {
@@ -240,35 +233,33 @@ impl Boids {
 
         // Register all boids within their current chunks.
         for boid in self.boids.state() {
-            if let Some(chunk) = self
-                .chunks
-                .get_mut_by_pos(boid.pos + self.frame().pos(), self.frame())
-            {
+            if let Some(chunk) = self.chunks.get_mut_by_pos(
+                boid.pos,
+                vec2(0., 0.),
+                vec2(self.sim_width, self.sim_height),
+            ) {
                 chunk.push(boid.index);
             }
         }
-    }
-
-    fn frame(&self) -> DrawFrame {
-        self.layout.frame
     }
 }
 
 impl Draw for Boids {
     fn draw(&self, _frame: &mut Frame) {
+        clear_background(BLANK);
         for boid in self.boids.state() {
-            boid.draw(self.frame());
+            boid.draw();
         }
     }
 }
 
 impl Update for Boids {
-    fn update(&mut self, frame: &Frame) {
+    fn update(&mut self, _frame: &Frame) {
         let update_start = Instant::now();
         let deltatime = update_start - self.last_update;
 
-        self.layout.refresh();
-        let frame = self.frame();
+        let sim_width = self.sim_width;
+        let sim_height = self.sim_height;
         self.update_chunks();
 
         let (boids, chunks) = (&mut self.boids, &self.chunks);
@@ -279,16 +270,27 @@ impl Update for Boids {
             let old_boid = &state[i];
 
             let neighbours = chunks
-                .get_neighbourhood_at_pos(old_boid.pos + frame.pos(), 1, frame)
+                .get_neighbourhood_at_pos(
+                    old_boid.pos,
+                    1,
+                    vec2(0., 0.),
+                    vec2(self.sim_width, self.sim_height),
+                )
                 .flat_map(|chunk| chunk.iter())
                 .copied()
                 .filter(|&j| j != i)
                 .map(|j| &state[j]);
 
-            *new_boid = old_boid.update(deltatime, neighbours, &frame);
+            *new_boid = old_boid.update(deltatime, neighbours, sim_width, sim_height);
         });
 
         self.boids.swap();
         self.last_update = update_start;
+    }
+}
+
+impl HasSize for Boids {
+    fn size(&self) -> Vec2 {
+        vec2(self.sim_width, self.sim_height)
     }
 }

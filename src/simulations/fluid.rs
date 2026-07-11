@@ -2,7 +2,6 @@ use crate::frame::Frame;
 use crate::grid::Grid;
 use crate::shaders::liquid_material;
 use crate::traits::*;
-use crate::DrawFrame;
 
 use macroquad::prelude::*;
 use rayon::prelude::*;
@@ -36,6 +35,7 @@ pub struct FluidParticle {
 }
 
 impl FluidParticle {
+    #[allow(unused)]
     pub fn new(index: usize, x: f32, y: f32) -> Self {
         Self {
             index,
@@ -113,6 +113,7 @@ pub struct FluidSim {
 }
 
 impl FluidSim {
+    #[allow(unused)]
     pub fn new(particles: Vec<FluidParticle>, sim_width: f32, sim_height: f32) -> Self {
         let ideal_chunk_size = SMOOTHING_RADIUS;
         let columns = (sim_width / ideal_chunk_size).floor() as usize;
@@ -137,6 +138,7 @@ impl FluidSim {
         }
     }
 
+    #[allow(unused)]
     pub fn init(num_particles: usize, sim_width: f32, sim_height: f32) -> Self {
         let mut particles = Vec::new();
 
@@ -163,10 +165,13 @@ impl FluidSim {
         self.chunks
             .resize_with_defaults(columns as usize, rows as usize);
 
-        let frame = DrawFrame::new(0., 0., screen_width(), screen_height());
         // Register all particles within their current chunks.
         for particle in &self.particles {
-            if let Some(chunk) = self.chunks.get_mut_by_pos(particle.predicted_pos, frame) {
+            if let Some(chunk) = self.chunks.get_mut_by_pos(
+                particle.predicted_pos,
+                vec2(0., 0.),
+                vec2(self.sim_width, self.sim_height),
+            ) {
                 chunk.push(particle.index);
             }
         }
@@ -182,7 +187,6 @@ impl FluidSim {
     fn update_densities(&mut self) {
         let particles = &self.particles;
         let chunks = &self.chunks;
-        let frame = DrawFrame::new(0., 0., screen_width(), screen_height());
 
         self.densities
             .par_iter_mut()
@@ -195,7 +199,12 @@ impl FluidSim {
                 let mut gradient_sum = 0.;
                 let mut self_gradient = Vec2::ZERO;
 
-                for chunk in chunks.get_neighbourhood_at_pos(position, 1, frame) {
+                for chunk in chunks.get_neighbourhood_at_pos(
+                    position,
+                    1,
+                    vec2(0., 0.),
+                    vec2(self.sim_width, self.sim_height),
+                ) {
                     for j in chunk.iter().copied() {
                         let displacement = particles[j].predicted_pos - particles[i].predicted_pos;
                         let distance_squared = displacement.length_squared();
@@ -227,7 +236,6 @@ impl FluidSim {
         let particles = &self.particles;
         let lambdas = &self.lambdas;
         let chunks = &self.chunks;
-        let frame = DrawFrame::new(0., 0., screen_width(), screen_height());
 
         self.position_deltas
             .par_iter_mut()
@@ -236,7 +244,12 @@ impl FluidSim {
                 *delta = Vec2::ZERO;
                 let position = particles[i].predicted_pos;
 
-                for chunk in chunks.get_neighbourhood_at_pos(position, 1, frame) {
+                for chunk in chunks.get_neighbourhood_at_pos(
+                    position,
+                    1,
+                    vec2(0., 0.),
+                    vec2(self.sim_width, self.sim_height),
+                ) {
                     for j in chunk.iter().copied() {
                         if i == j {
                             continue;
@@ -268,7 +281,6 @@ impl FluidSim {
     fn calculate_viscosity_forces(&mut self) {
         let particles = &self.particles;
         let chunks = &self.chunks;
-        let frame = DrawFrame::new(0., 0., screen_width(), screen_height());
 
         self.viscosity_forces
             .par_iter_mut()
@@ -280,7 +292,12 @@ impl FluidSim {
                 let mut weighted_velocity = Vec2::ZERO;
                 let mut sum_of_weights = 0.0;
 
-                for chunk in chunks.get_neighbourhood_at_pos(position, 1, frame) {
+                for chunk in chunks.get_neighbourhood_at_pos(
+                    position,
+                    1,
+                    vec2(0., 0.),
+                    vec2(self.sim_width, self.sim_height),
+                ) {
                     for j in chunk.iter().copied() {
                         let displacement = particles[j].pos - particles[i].pos;
                         let distance_squared = displacement.length_squared();
@@ -349,8 +366,6 @@ impl FluidSim {
         }
 
         let direction = displacement / distance;
-        // let strength = ((SMOOTHING_RADIUS - distance) / SMOOTHING_RADIUS).powi(2);
-        // let strength = 1.0 - (distance / SMOOTHING_RADIUS);
         let strength = SMOOTHING_RADIUS - distance;
 
         direction * strength * strength
@@ -371,7 +386,6 @@ impl FluidSim {
                 }
             }
         } else if is_mouse_button_down(MouseButton::Right) {
-            let mouse_pos = Vec2::from(mouse_position());
             for particle in self.particles.iter_mut() {
                 let displacement = mouse_pos - particle.pos;
 
@@ -434,19 +448,6 @@ impl FluidSim {
     }
 }
 
-impl Draw for FluidSim {
-    fn draw(&self, frame: &mut Frame) {
-        let mouse_pos = frame.relative_mouse_pos();
-        let camera = frame.camera();
-
-        set_camera(camera);
-        clear_background(BLANK);
-
-        self.draw_fluid_texture(camera);
-        self.draw_particles(mouse_pos);
-    }
-}
-
 impl Update for FluidSim {
     fn update(&mut self, frame: &Frame) {
         let update_start = Instant::now();
@@ -480,6 +481,19 @@ impl Update for FluidSim {
             .for_each(|particle| particle.commit_new_position(self.sim_width, self.sim_height));
 
         self.last_update = update_start;
+    }
+}
+
+impl Draw for FluidSim {
+    fn draw(&self, frame: &mut Frame) {
+        let mouse_pos = frame.relative_mouse_pos();
+        let camera = frame.camera();
+
+        set_camera(camera);
+        clear_background(BLANK);
+
+        self.draw_fluid_texture(camera);
+        self.draw_particles(mouse_pos);
     }
 }
 

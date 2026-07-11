@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use crate::frame::DrawFrame;
+use crate::frame::Frame;
 use crate::traits::*;
 
 use macroquad::prelude::*;
@@ -56,8 +56,8 @@ impl<T> Grid<T> {
     /// function.
     pub fn from_generator<F: Fn(usize, usize) -> T>(columns: usize, rows: usize, f: F) -> Self {
         let mut cells = Vec::with_capacity(columns * rows);
-        for col in 0..columns {
-            for row in 0..rows {
+        for row in 0..rows {
+            for col in 0..columns {
                 cells.push(f(col, row));
             }
         }
@@ -109,14 +109,14 @@ impl<T> Grid<T> {
         self.inner.get_mut(index)
     }
 
-    pub fn get_by_pos(&self, pos: Vec2, frame: DrawFrame) -> Option<&T> {
-        let (column, row) = self.get_coords(pos, frame);
+    pub fn get_by_pos(&self, pos: Vec2, grid_pos: Vec2, grid_size: Vec2) -> Option<&T> {
+        let (column, row) = self.get_coords(pos, grid_pos, grid_size);
         self.get(column, row)
     }
 
     /// position.
-    pub fn get_mut_by_pos(&mut self, pos: Vec2, frame: DrawFrame) -> Option<&mut T> {
-        let (column, row) = self.get_coords(pos, frame);
+    pub fn get_mut_by_pos(&mut self, pos: Vec2, grid_pos: Vec2, grid_size: Vec2) -> Option<&mut T> {
+        let (column, row) = self.get_coords(pos, grid_pos, grid_size);
         self.get_mut(column, row)
     }
 
@@ -130,12 +130,12 @@ impl<T> Grid<T> {
 
     /// Calculates the row and column a cell, given a set of absolute screen
     /// coordinates and the frame that this grid spans.
-    pub fn get_coords(&self, pos: Vec2, frame: DrawFrame) -> (isize, isize) {
-        let chunk_width = frame.width() / self.columns as f32;
-        let chunk_height = frame.height() / self.rows as f32;
+    pub fn get_coords(&self, pos: Vec2, grid_pos: Vec2, grid_size: Vec2) -> (isize, isize) {
+        let chunk_width = grid_size.x / self.columns as f32;
+        let chunk_height = grid_size.y / self.rows as f32;
 
-        let chunk_column = ((pos.x - frame.x()) / chunk_width).floor() as isize;
-        let chunk_row = ((pos.y - frame.y()) / chunk_height).floor() as isize;
+        let chunk_column = ((pos.x - grid_pos.x) / chunk_width).floor() as isize;
+        let chunk_row = ((pos.y - grid_pos.y) / chunk_height).floor() as isize;
         (chunk_column, chunk_row)
     }
 
@@ -184,9 +184,10 @@ impl<T> Grid<T> {
         &self,
         pos: Vec2,
         distance: usize,
-        frame: DrawFrame,
+        grid_pos: Vec2,
+        grid_size: Vec2,
     ) -> impl Iterator<Item = &T> {
-        let (column, row) = self.get_coords(pos, frame);
+        let (column, row) = self.get_coords(pos, grid_pos, grid_size);
         self.get_neighbourhood(column, row, distance)
     }
 
@@ -213,57 +214,59 @@ impl<T> Grid<T> {
         &self,
         pos: Vec2,
         distance: usize,
-        frame: DrawFrame,
+        grid_pos: Vec2,
+        grid_size: Vec2,
     ) -> impl Iterator<Item = (isize, isize)> {
-        let (column, row) = self.get_coords(pos, frame);
+        let (column, row) = self.get_coords(pos, grid_pos, grid_size);
         self.get_neighbourhood_coords(column, row, distance)
     }
 
-    pub fn draw_gridlines(&self, frame: DrawFrame) {
-        let width = frame.width() / self.columns() as f32;
-        let height = frame.height() / self.rows() as f32;
+    pub fn draw_gridlines(&self, grid_pos: Vec2, grid_size: Vec2) {
+        let width = grid_size.x / self.columns() as f32;
+        let height = grid_size.y / self.rows() as f32;
 
         for column in 0..self.columns() {
             for row in 0..self.rows() {
-                let x = frame.x() + column as f32 * width;
-                let y = frame.y() + row as f32 * height;
+                let x = grid_pos.x + column as f32 * width;
+                let y = grid_pos.y + row as f32 * height;
 
                 draw_rectangle_lines(x, y, width, height, 4., crate::OUTLINE_COLOR);
             }
         }
     }
 
-    pub fn highlight_cell(&self, pos: Vec2, color: Color, frame: DrawFrame) {
-        let width = frame.width() / self.columns() as f32;
-        let height = frame.height() / self.rows() as f32;
+    pub fn highlight_cell(&self, pos: Vec2, color: Color, grid_pos: Vec2, grid_size: Vec2) {
+        let width = grid_size.x / self.columns() as f32;
+        let height = grid_size.y / self.rows() as f32;
 
-        let target_cell = self.get_coords(pos, frame);
+        let target_cell = self.get_coords(pos, grid_pos, grid_size);
 
         for column in 0..self.columns() {
             for row in 0..self.rows() {
                 if target_cell == (column as isize, row as isize) {
-                    let x = frame.x() + column as f32 * width;
-                    let y = frame.y() + row as f32 * height;
+                    let x = grid_pos.x + column as f32 * width;
+                    let y = grid_pos.y + row as f32 * height;
                     draw_rectangle(x, y, width, height, color);
                 }
             }
         }
     }
 
-    pub fn highlight_neighbours(&self, pos: Vec2, color: Color, frame: DrawFrame) {
-        let width = frame.width() / self.columns() as f32;
-        let height = frame.height() / self.rows() as f32;
+    pub fn highlight_neighbours(&self, pos: Vec2, color: Color, grid_pos: Vec2, grid_size: Vec2) {
+        let width = grid_size.x / self.columns() as f32;
+        let height = grid_size.y / self.rows() as f32;
 
-        let target_cell = self.get_coords(pos, frame);
+        let target_cell = self.get_coords(pos, grid_pos, grid_size);
 
         for column in 0..self.columns() as isize {
             for row in 0..self.rows() as isize {
-                let mut neighbourhood = self.get_neighbourhood_coords_at_pos(pos, 1, frame);
+                let mut neighbourhood =
+                    self.get_neighbourhood_coords_at_pos(pos, 1, grid_pos, grid_size);
 
                 if target_cell != (column, row) && neighbourhood.any(|coord| coord == (column, row))
                 {
-                    let x = frame.x() + column as f32 * width;
-                    let y = frame.y() + row as f32 * height;
+                    let x = grid_pos.x + column as f32 * width;
+                    let y = grid_pos.y + row as f32 * height;
                     draw_rectangle(x, y, width, height, color);
                 }
             }
@@ -302,8 +305,12 @@ mod tests {
         Grid::new(test_cells(), 2, 3)
     }
 
-    fn test_frame() -> DrawFrame {
-        DrawFrame::new(100., 50., 200., 300.)
+    fn test_grid_pos() -> Vec2 {
+        vec2(100., 50.)
+    }
+
+    fn test_grid_size() -> Vec2 {
+        vec2(200., 300.)
     }
 
     #[test]
@@ -347,28 +354,59 @@ mod tests {
 
     #[test]
     fn absolute_coords_outside_bounds_are_not_indexed() {
-        let frame = test_frame();
         let grid = Grid::new(test_cells(), 2, 3);
 
-        assert_eq!(None, grid.get_by_pos(Vec2::new(0., 0.), frame));
-        assert_eq!(None, grid.get_by_pos(Vec2::new(99., 49.), frame));
-        assert_eq!(None, grid.get_by_pos(Vec2::new(200., 49.), frame));
-        assert_eq!(None, grid.get_by_pos(Vec2::new(99., 200.), frame));
+        assert_eq!(
+            None,
+            grid.get_by_pos(Vec2::new(0., 0.), test_grid_pos(), test_grid_size())
+        );
+        assert_eq!(
+            None,
+            grid.get_by_pos(Vec2::new(99., 49.), test_grid_pos(), test_grid_size())
+        );
+        assert_eq!(
+            None,
+            grid.get_by_pos(Vec2::new(200., 49.), test_grid_pos(), test_grid_size())
+        );
+        assert_eq!(
+            None,
+            grid.get_by_pos(Vec2::new(99., 200.), test_grid_pos(), test_grid_size())
+        );
 
-        assert_eq!(None, grid.get_by_pos(Vec2::new(200., 350.), frame));
-        assert_eq!(None, grid.get_by_pos(Vec2::new(300., 200.), frame));
-        assert_eq!(None, grid.get_by_pos(Vec2::new(300., 350.), frame));
+        assert_eq!(
+            None,
+            grid.get_by_pos(Vec2::new(200., 350.), test_grid_pos(), test_grid_size())
+        );
+        assert_eq!(
+            None,
+            grid.get_by_pos(Vec2::new(300., 200.), test_grid_pos(), test_grid_size())
+        );
+        assert_eq!(
+            None,
+            grid.get_by_pos(Vec2::new(300., 350.), test_grid_pos(), test_grid_size())
+        );
     }
 
     #[test]
     fn absolute_coords_inside_bounds_are_indexed() {
-        let frame = test_frame();
         let grid = Grid::new(test_cells(), 2, 3);
 
-        assert_eq!(Some(&1), grid.get_by_pos(Vec2::new(100., 50.), frame));
-        assert_eq!(Some(&2), grid.get_by_pos(Vec2::new(200., 50.), frame));
-        assert_eq!(Some(&3), grid.get_by_pos(Vec2::new(100., 150.), frame));
-        assert_eq!(Some(&6), grid.get_by_pos(Vec2::new(299., 349.), frame));
+        assert_eq!(
+            Some(&1),
+            grid.get_by_pos(Vec2::new(100., 50.), test_grid_pos(), test_grid_size())
+        );
+        assert_eq!(
+            Some(&2),
+            grid.get_by_pos(Vec2::new(200., 50.), test_grid_pos(), test_grid_size())
+        );
+        assert_eq!(
+            Some(&3),
+            grid.get_by_pos(Vec2::new(100., 150.), test_grid_pos(), test_grid_size())
+        );
+        assert_eq!(
+            Some(&6),
+            grid.get_by_pos(Vec2::new(299., 349.), test_grid_pos(), test_grid_size())
+        );
     }
 
     #[test]
