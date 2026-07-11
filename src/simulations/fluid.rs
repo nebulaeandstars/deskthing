@@ -98,7 +98,7 @@ impl FluidParticle {
     }
 }
 
-pub struct SimpleFluidSim {
+pub struct FluidSim {
     layout: Layout,
     particles: Vec<FluidParticle>,
     densities: Vec<f32>,
@@ -110,7 +110,7 @@ pub struct SimpleFluidSim {
     draw_material: Material,
 }
 
-impl SimpleFluidSim {
+impl FluidSim {
     pub fn new(mut layout: Layout, particles: Vec<FluidParticle>) -> Self {
         layout.refresh();
 
@@ -457,7 +457,7 @@ impl SimpleFluidSim {
     }
 }
 
-impl Update for SimpleFluidSim {
+impl Update for FluidSim {
     fn update(&mut self) {
         let update_start = Instant::now();
         let deltatime = update_start - self.last_update;
@@ -494,7 +494,7 @@ impl Update for SimpleFluidSim {
     }
 }
 
-impl Draw for SimpleFluidSim {
+impl Draw for FluidSim {
     fn draw(&self) {
         self.draw_fluid_texture();
         self.draw_particles();

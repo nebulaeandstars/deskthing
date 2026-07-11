@@ -47,7 +47,11 @@ impl Components {
 
 #[macroquad::main("window_config")]
 async fn main() {
+    const CONWAY_DIMENSIONS: (usize, usize) = (200, 200);
+    const CONWAY_FILL_PERCENT: f32 = 0.75;
     const NUM_BOIDS: usize = 500;
+    const COLORLIFE_PARTICLES: usize = 3000;
+    const FLUID_PARTICLES: usize = 1000;
 
     let mut components = Components::init();
 
@@ -66,9 +70,7 @@ async fn main() {
         "simulation-outline",
         FrameOutline::new(simulation, OUTLINE_THICKNESS, OUTLINE_COLOR),
     );
-    // components.add("simulation-content", Boids::init(simulation, NUM_BOIDS));
-    // components.add("simulation-content", Colorlife::init(simulation, 3000));
-    components.add("simulation-content", SimpleFluidSim::init(simulation, 1000));
+    components.add("simulation-content", FluidSim::init(simulation, 1000));
 
     let target = render_target(512, 512);
     target.texture.set_filter(FilterMode::Nearest);
@@ -76,21 +78,35 @@ async fn main() {
     loop {
         components.update();
 
-        if is_key_pressed(KeyCode::Enter) {
-            // components.add("simulation-content", Boids::init(simulation, NUM_BOIDS));
-            // components.add("simulation-content", Colorlife::init(simulation, 3000));
-            components.add("simulation-content", SimpleFluidSim::init(simulation, 1000));
-        }
-
-        if is_key_pressed(KeyCode::Space) {
+        if is_key_pressed(KeyCode::A) {
             components.add(
                 "simulation-content",
-                Conway::random(simulation, _CONWAY, 0.75, 200, 200),
+                Conway::random(
+                    simulation,
+                    _CONWAY,
+                    CONWAY_FILL_PERCENT,
+                    CONWAY_DIMENSIONS.0,
+                    CONWAY_DIMENSIONS.1,
+                ),
             );
         }
 
-        if is_key_pressed(KeyCode::A) {
-            components.add("simulation-content", Colorlife::init(simulation, 2000));
+        if is_key_pressed(KeyCode::B) {
+            components.add("simulation-content", Boids::init(simulation, NUM_BOIDS));
+        }
+
+        if is_key_pressed(KeyCode::C) {
+            components.add(
+                "simulation-content",
+                Colorlife::init(simulation, COLORLIFE_PARTICLES),
+            );
+        }
+
+        if is_key_pressed(KeyCode::D) {
+            components.add(
+                "simulation-content",
+                FluidSim::init(simulation, FLUID_PARTICLES),
+            );
         }
 
         clear_background(BG_COLOR);

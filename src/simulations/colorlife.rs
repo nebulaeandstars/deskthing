@@ -6,7 +6,6 @@ use crate::Frame;
 
 use macroquad::prelude::*;
 use rayon::prelude::*;
-use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
 const MIN_SPEED: f32 = 0.0;
