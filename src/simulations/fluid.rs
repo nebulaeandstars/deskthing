@@ -53,22 +53,22 @@ impl FluidParticle {
         }
     }
 
-    pub fn bounce(&mut self, frame: &Frame) {
+    pub fn bounce(&mut self, sim_width: f32, sim_height: f32) {
         const MIN_DISTANCE_FROM_EDGE: f32 = 1. + PARTICLE_DRAW_SIZE / 2.;
 
         if self.pos.x < MIN_DISTANCE_FROM_EDGE {
             self.pos.x = MIN_DISTANCE_FROM_EDGE;
             self.vel.x *= -RESTITUTION_COEFFICIENT;
-        } else if self.pos.x > frame.width() - MIN_DISTANCE_FROM_EDGE {
-            self.pos.x = frame.width() - MIN_DISTANCE_FROM_EDGE;
+        } else if self.pos.x > sim_width - MIN_DISTANCE_FROM_EDGE {
+            self.pos.x = sim_width - MIN_DISTANCE_FROM_EDGE;
             self.vel.x *= -RESTITUTION_COEFFICIENT;
         }
 
         if self.pos.y < MIN_DISTANCE_FROM_EDGE {
             self.pos.y = MIN_DISTANCE_FROM_EDGE;
             self.vel.y *= -RESTITUTION_COEFFICIENT;
-        } else if self.pos.y > frame.height() - MIN_DISTANCE_FROM_EDGE {
-            self.pos.y = frame.height() - MIN_DISTANCE_FROM_EDGE;
+        } else if self.pos.y > sim_height - MIN_DISTANCE_FROM_EDGE {
+            self.pos.y = sim_height - MIN_DISTANCE_FROM_EDGE;
             self.vel.y *= -RESTITUTION_COEFFICIENT;
         }
     }
@@ -92,14 +92,16 @@ impl FluidParticle {
         self.clamp_speed();
     }
 
-    pub fn commit_new_position(&mut self, frame: &Frame) {
+    pub fn commit_new_position(&mut self, sim_width: f32, sim_height: f32) {
         self.pos = self.predicted_pos;
-        self.bounce(frame);
+        self.bounce(sim_width, sim_height);
     }
 }
 
 pub struct FluidSim {
     layout: Layout,
+    sim_width: f32,
+    sim_height: f32,
     particles: Vec<FluidParticle>,
     densities: Vec<f32>,
     lambdas: Vec<f32>,
@@ -121,6 +123,8 @@ impl FluidSim {
 
         Self {
             layout,
+            sim_width: 250.,
+            sim_height: 200.,
             particles,
             densities: vec![0.; num_particles],
             lambdas: vec![0.; num_particles],
@@ -146,14 +150,10 @@ impl FluidSim {
         Self::new(layout, particles)
     }
 
-    fn frame(&self) -> Frame {
-        self.layout.frame
-    }
-
     fn update_chunks(&mut self) {
         let ideal_chunk_size = SMOOTHING_RADIUS;
-        let columns = (self.frame().width() / ideal_chunk_size).floor();
-        let rows = (self.frame().height() / ideal_chunk_size).floor();
+        let columns = (self.sim_width / ideal_chunk_size).floor();
+        let rows = (self.sim_height / ideal_chunk_size).floor();
 
         // Reset all chunks.
         for chunk in self.chunks.iter_mut() {
@@ -358,38 +358,41 @@ impl FluidSim {
     }
 
     fn apply_external_forces(&mut self) {
-        self.apply_mouse_interaction_forces()
+        // self.apply_mouse_interaction_forces()
     }
 
-    fn apply_mouse_interaction_forces(&mut self) {
-        let frame = self.frame();
-
+    fn apply_mouse_interaction_forces(&mut self, sim_pos: Vec2) {
         const MOUSE_FORCE: f32 = 1000.;
         if is_mouse_button_down(MouseButton::Left) {
             let mouse_pos = Vec2::from(mouse_position());
             for particle in self.particles.iter_mut() {
-                let displacement = mouse_pos - frame.pos() - particle.pos;
+                let displacement = mouse_pos - sim_pos - particle.pos;
 
-                if (Vec2::from(mouse_pos) - frame.pos() - particle.pos).length() < SMOOTHING_RADIUS
-                {
+                if (Vec2::from(mouse_pos) - sim_pos - particle.pos).length() < SMOOTHING_RADIUS {
                     particle.vel -= (displacement / SMOOTHING_RADIUS) * -MOUSE_FORCE;
                 }
             }
         } else if is_mouse_button_down(MouseButton::Right) {
             let mouse_pos = Vec2::from(mouse_position());
             for particle in self.particles.iter_mut() {
-                let displacement = mouse_pos - frame.pos() - particle.pos;
+                let displacement = mouse_pos - sim_pos - particle.pos;
 
-                if (Vec2::from(mouse_pos) - frame.pos() - particle.pos).length() < SMOOTHING_RADIUS
-                {
+                if (Vec2::from(mouse_pos) - sim_pos - particle.pos).length() < SMOOTHING_RADIUS {
                     particle.vel -= (displacement / SMOOTHING_RADIUS) * MOUSE_FORCE;
                 }
             }
         }
     }
 
-    fn draw_fluid_texture(&self) {
-        let target = render_target(self.frame().width() as u32, self.frame().height() as u32);
+    fn relative_mouse_pos(&self, frame: &Frame) -> Vec2 {
+        let mut mouse_pos = Vec2::from(mouse_position()) - frame.pos();
+        mouse_pos.x = mouse_pos.x * self.sim_width / frame.width();
+        mouse_pos.y = mouse_pos.y * self.sim_height / frame.height();
+        mouse_pos
+    }
+
+    fn draw_fluid_texture(&self, frame: &Frame) {
+        let target = render_target(self.sim_width as u32, self.sim_height as u32);
         target.texture.set_filter(FilterMode::Nearest);
 
         // Draw into the target
@@ -418,13 +421,13 @@ impl FluidSim {
         let offset = crate::OUTLINE_THICKNESS / 2.;
         draw_texture_ex(
             &target.texture,
-            self.frame().x() + offset,
-            self.frame().y() + offset,
+            frame.x() + offset,
+            frame.y() + offset,
             Color::new(0., 0., 0., 0.),
             DrawTextureParams {
                 dest_size: Some(vec2(
-                    self.frame().width() - offset * 2.,
-                    self.frame().height() - offset * 2.,
+                    frame.width() - offset * 2.,
+                    frame.height() - offset * 2.,
                 )),
                 flip_y: true,
                 ..Default::default()
@@ -433,27 +436,64 @@ impl FluidSim {
         gl_use_default_material();
     }
 
-    fn draw_particles(&self) {
-        let mouse_pos = Vec2::from(mouse_position());
+    fn draw_particles(&self, relative_mouse_pos: Vec2) {
         for particle in &self.particles {
-            if (Vec2::from(mouse_pos) - self.frame().pos() - particle.pos).length()
-                < SMOOTHING_RADIUS
-            {
+            if (relative_mouse_pos - particle.pos).length() < SMOOTHING_RADIUS {
                 draw_circle(
-                    particle.pos.x + self.frame().x(),
-                    particle.pos.y + self.frame().y(),
+                    particle.pos.x,
+                    particle.pos.y,
                     3.,
                     Color::new(0.8, 0.2, 0.2, 0.6),
                 );
             } else {
                 draw_circle(
-                    particle.pos.x + self.frame().x(),
-                    particle.pos.y + self.frame().y(),
+                    particle.pos.x,
+                    particle.pos.y,
                     3.,
                     Color::new(0.2, 0.6, 0.8, 0.6),
                 );
             }
         }
+    }
+
+    pub fn draw(&self, frame: &Frame) {
+        let target = render_target(self.sim_width as u32, self.sim_height as u32);
+        target.texture.set_filter(FilterMode::Nearest);
+
+        // Draw into the target
+        set_camera(&Camera2D {
+            render_target: Some(target.clone()),
+            zoom: vec2(2.0 / target.texture.width(), -2.0 / target.texture.height()),
+            target: vec2(target.texture.width() / 2.0, target.texture.height() / 2.0),
+            ..Default::default()
+        });
+
+        clear_background(Color::new(0., 0., 0., 0.));
+
+        // self.draw_fluid_texture(frame);
+        self.draw_particles(self.relative_mouse_pos(frame));
+
+        // Draw to the screen
+        set_default_camera();
+
+        // Draw the generated texture
+        // gl_use_material(&self.draw_material);
+        let offset = crate::OUTLINE_THICKNESS / 2.;
+        draw_texture_ex(
+            &target.texture,
+            frame.x() + offset,
+            frame.y() + offset,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(
+                    frame.width() - offset * 2.,
+                    frame.height() - offset * 2.,
+                )),
+                flip_y: true,
+                ..Default::default()
+            },
+        );
+        // gl_use_default_material();
     }
 }
 
@@ -462,7 +502,6 @@ impl Update for FluidSim {
         let update_start = Instant::now();
         let deltatime = update_start - self.last_update;
         self.layout.refresh();
-        let frame = self.frame();
 
         self.apply_external_forces();
 
@@ -488,15 +527,8 @@ impl Update for FluidSim {
 
         self.particles
             .par_iter_mut()
-            .for_each(|particle| particle.commit_new_position(&frame));
+            .for_each(|particle| particle.commit_new_position(self.sim_width, self.sim_height));
 
         self.last_update = update_start;
-    }
-}
-
-impl Draw for FluidSim {
-    fn draw(&self) {
-        self.draw_fluid_texture();
-        self.draw_particles();
     }
 }

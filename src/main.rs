@@ -57,7 +57,7 @@ async fn main() {
 
     // Frames
     let sidebar = Layout::new(None, 0.05, 0.05, 0.19, 0.9);
-    let simulation = Layout::new(None, 0.25, 0.05, 0.7, 0.9);
+    let mut simulation = Layout::new(None, 0.25, 0.05, 0.7, 0.9);
 
     // Sidebar components
     components.add(
@@ -70,7 +70,9 @@ async fn main() {
         "simulation-outline",
         FrameOutline::new(simulation, OUTLINE_THICKNESS, OUTLINE_COLOR),
     );
-    components.add("simulation-content", FluidSim::init(simulation, 1000));
+    // components.add("simulation-content", FluidSim::init(simulation, FLUID_PARTICLES));
+
+    let mut fluid_sim = FluidSim::init(simulation, FLUID_PARTICLES);
 
     let target = render_target(512, 512);
     target.texture.set_filter(FilterMode::Nearest);
@@ -103,14 +105,20 @@ async fn main() {
         }
 
         if is_key_pressed(KeyCode::D) {
-            components.add(
-                "simulation-content",
-                FluidSim::init(simulation, FLUID_PARTICLES),
-            );
+            // components.add(
+            //     "simulation-content",
+            //     FluidSim::init(simulation, FLUID_PARTICLES),
+            // );
         }
 
         clear_background(BG_COLOR);
         components.draw().await;
+
+        // TODO: remove
+        simulation.refresh();
+        fluid_sim.update();
+        fluid_sim.draw(&simulation.frame);
+
         next_frame().await;
     }
 }
