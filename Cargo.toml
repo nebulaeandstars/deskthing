@@ -3,6 +3,13 @@ name = "deskthing"
 version = "0.1.0"
 edition = "2024"
 author = "Laura Powles <laura@laurapowles.com>"
+repository = "github.com/nebulaeandstars/deskthing"
+readme = "README.md"
+license = "LICENSE"
+
+[profile.release]
+opt-level = 3
+strip = true
 
 [dependencies]
 macroquad = "0.4.15"
