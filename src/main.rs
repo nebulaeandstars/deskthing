@@ -5,45 +5,15 @@ mod shaders;
 mod simulations;
 mod traits;
 
-use frame::{Frame, FrameOutline, Layout};
+use frame::{DrawFrame, DrawFrameLayout};
 use simulations::*;
 use traits::*;
 
 use macroquad::prelude::*;
-use std::collections::HashMap;
 
 pub const BG_COLOR: Color = Color::new(0.18, 0.18, 0.18, 1.0);
 pub const OUTLINE_COLOR: Color = Color::new(0.8, 0.8, 0.8, 1.0);
 pub const OUTLINE_THICKNESS: f32 = 4.0;
-
-#[derive(Default)]
-struct Components {
-    inner: HashMap<&'static str, Box<dyn Component>>,
-}
-
-impl Components {
-    pub fn init() -> Self {
-        Self {
-            inner: HashMap::new(),
-        }
-    }
-
-    pub fn add(&mut self, name: &'static str, component: impl Component + 'static) {
-        self.inner.insert(name, Box::new(component));
-    }
-
-    pub fn update(&mut self) {
-        for component in self.inner.values_mut() {
-            component.update();
-        }
-    }
-
-    pub async fn draw(&self) {
-        for component in self.inner.values() {
-            component.draw();
-        }
-    }
-}
 
 #[macroquad::main("window_config")]
 async fn main() {
@@ -53,71 +23,75 @@ async fn main() {
     const COLORLIFE_PARTICLES: usize = 3000;
     const FLUID_PARTICLES: usize = 1000;
 
-    let mut components = Components::init();
+    const SIM_WIDTH: f32 = 400.;
+    const SIM_HEIGHT: f32 = 300.;
 
     // Frames
-    let sidebar = Layout::new(None, 0.05, 0.05, 0.19, 0.9);
-    let mut simulation = Layout::new(None, 0.25, 0.05, 0.7, 0.9);
+    let sidebar = DrawFrameLayout::new(None, 0.05, 0.05, 0.19, 0.9);
+    let mut simulation = DrawFrameLayout::new(None, 0.25, 0.05, 0.7, 0.9);
 
     // Sidebar components
-    components.add(
-        "sidebar-outline",
-        FrameOutline::new(sidebar, OUTLINE_THICKNESS, OUTLINE_COLOR),
-    );
+    // components.add(
+    //     "sidebar-outline",
+    //     FrameOutline::new(sidebar, OUTLINE_THICKNESS, OUTLINE_COLOR),
+    // );
 
     // Simulation components
-    components.add(
-        "simulation-outline",
-        FrameOutline::new(simulation, OUTLINE_THICKNESS, OUTLINE_COLOR),
-    );
+    // components.add(
+    //     "simulation-outline",
+    //     FrameOutline::new(simulation, OUTLINE_THICKNESS, OUTLINE_COLOR),
+    // );
     // components.add("simulation-content", FluidSim::init(simulation, FLUID_PARTICLES));
 
-    let mut fluid_sim = FluidSim::init(simulation, FLUID_PARTICLES);
+    let fluid_sim = FluidSim::init(FLUID_PARTICLES, SIM_WIDTH, SIM_HEIGHT);
+    let mut test_frame =
+        frame::Component::relative_to_screen(fluid_sim, vec2(0.2, 0.2), vec2(0.6, 0.6));
 
     let target = render_target(512, 512);
     target.texture.set_filter(FilterMode::Nearest);
 
     loop {
-        components.update();
+        // if is_key_pressed(KeyCode::A) {
+        //     components.add(
+        //         "simulation-content",
+        //         Conway::random(
+        //             simulation,
+        //             _CONWAY,
+        //             CONWAY_FILL_PERCENT,
+        //             CONWAY_DIMENSIONS.0,
+        //             CONWAY_DIMENSIONS.1,
+        //         ),
+        //     );
+        // }
 
-        if is_key_pressed(KeyCode::A) {
-            components.add(
-                "simulation-content",
-                Conway::random(
-                    simulation,
-                    _CONWAY,
-                    CONWAY_FILL_PERCENT,
-                    CONWAY_DIMENSIONS.0,
-                    CONWAY_DIMENSIONS.1,
-                ),
-            );
-        }
+        // if is_key_pressed(KeyCode::B) {
+        //     components.add("simulation-content", Boids::init(simulation, NUM_BOIDS));
+        // }
 
-        if is_key_pressed(KeyCode::B) {
-            components.add("simulation-content", Boids::init(simulation, NUM_BOIDS));
-        }
+        // if is_key_pressed(KeyCode::C) {
+        //     components.add(
+        //         "simulation-content",
+        //         Colorlife::init(simulation, COLORLIFE_PARTICLES),
+        //     );
+        // }
 
-        if is_key_pressed(KeyCode::C) {
-            components.add(
-                "simulation-content",
-                Colorlife::init(simulation, COLORLIFE_PARTICLES),
-            );
-        }
-
-        if is_key_pressed(KeyCode::D) {
-            // components.add(
-            //     "simulation-content",
-            //     FluidSim::init(simulation, FLUID_PARTICLES),
-            // );
-        }
+        // if is_key_pressed(KeyCode::D) {
+        //     components.add(
+        //         "simulation-content",
+        //         FluidSim::init(simulation, FLUID_PARTICLES),
+        //     );
+        // }
 
         clear_background(BG_COLOR);
-        components.draw().await;
 
         // TODO: remove
-        simulation.refresh();
-        fluid_sim.update();
-        fluid_sim.draw(&simulation.frame);
+        // simulation.refresh();
+        // fluid_sim.update();
+
+        test_frame.refit_to_screen(vec2(0.2, 0.2), vec2(0.6, 0.6));
+        test_frame.update();
+        test_frame.draw();
+        test_frame.draw_outline(4., WHITE);
 
         next_frame().await;
     }

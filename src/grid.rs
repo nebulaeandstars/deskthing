@@ -1,7 +1,7 @@
 #![allow(unused)]
 
-use crate::frame::Frame;
-use crate::traits::Draw;
+use crate::frame::DrawFrame;
+use crate::traits::*;
 
 use macroquad::prelude::*;
 use rayon::prelude::*;
@@ -109,13 +109,13 @@ impl<T> Grid<T> {
         self.inner.get_mut(index)
     }
 
-    pub fn get_by_pos(&self, pos: Vec2, frame: Frame) -> Option<&T> {
+    pub fn get_by_pos(&self, pos: Vec2, frame: DrawFrame) -> Option<&T> {
         let (column, row) = self.get_coords(pos, frame);
         self.get(column, row)
     }
 
     /// position.
-    pub fn get_mut_by_pos(&mut self, pos: Vec2, frame: Frame) -> Option<&mut T> {
+    pub fn get_mut_by_pos(&mut self, pos: Vec2, frame: DrawFrame) -> Option<&mut T> {
         let (column, row) = self.get_coords(pos, frame);
         self.get_mut(column, row)
     }
@@ -130,7 +130,7 @@ impl<T> Grid<T> {
 
     /// Calculates the row and column a cell, given a set of absolute screen
     /// coordinates and the frame that this grid spans.
-    pub fn get_coords(&self, pos: Vec2, frame: Frame) -> (isize, isize) {
+    pub fn get_coords(&self, pos: Vec2, frame: DrawFrame) -> (isize, isize) {
         let chunk_width = frame.width() / self.columns as f32;
         let chunk_height = frame.height() / self.rows as f32;
 
@@ -184,7 +184,7 @@ impl<T> Grid<T> {
         &self,
         pos: Vec2,
         distance: usize,
-        frame: Frame,
+        frame: DrawFrame,
     ) -> impl Iterator<Item = &T> {
         let (column, row) = self.get_coords(pos, frame);
         self.get_neighbourhood(column, row, distance)
@@ -213,13 +213,13 @@ impl<T> Grid<T> {
         &self,
         pos: Vec2,
         distance: usize,
-        frame: Frame,
+        frame: DrawFrame,
     ) -> impl Iterator<Item = (isize, isize)> {
         let (column, row) = self.get_coords(pos, frame);
         self.get_neighbourhood_coords(column, row, distance)
     }
 
-    pub fn draw_gridlines(&self, frame: Frame) {
+    pub fn draw_gridlines(&self, frame: DrawFrame) {
         let width = frame.width() / self.columns() as f32;
         let height = frame.height() / self.rows() as f32;
 
@@ -233,7 +233,7 @@ impl<T> Grid<T> {
         }
     }
 
-    pub fn highlight_cell(&self, pos: Vec2, color: Color, frame: Frame) {
+    pub fn highlight_cell(&self, pos: Vec2, color: Color, frame: DrawFrame) {
         let width = frame.width() / self.columns() as f32;
         let height = frame.height() / self.rows() as f32;
 
@@ -250,7 +250,7 @@ impl<T> Grid<T> {
         }
     }
 
-    pub fn highlight_neighbours(&self, pos: Vec2, color: Color, frame: Frame) {
+    pub fn highlight_neighbours(&self, pos: Vec2, color: Color, frame: DrawFrame) {
         let width = frame.width() / self.columns() as f32;
         let height = frame.height() / self.rows() as f32;
 
@@ -302,8 +302,8 @@ mod tests {
         Grid::new(test_cells(), 2, 3)
     }
 
-    fn test_frame() -> Frame {
-        Frame::new(100., 50., 200., 300.)
+    fn test_frame() -> DrawFrame {
+        DrawFrame::new(100., 50., 200., 300.)
     }
 
     #[test]

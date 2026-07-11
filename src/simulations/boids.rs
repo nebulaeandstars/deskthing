@@ -1,8 +1,9 @@
 use crate::buffer::DoubleBuffer;
-use crate::frame::Layout;
+use crate::frame::DrawFrameLayout;
+use crate::frame::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
-use crate::Frame;
+use crate::DrawFrame;
 
 use macroquad::prelude::*;
 use rand::RandomRange;
@@ -55,7 +56,7 @@ impl Boid {
         self.vel.normalize()
     }
 
-    pub fn clamp_to_frame(&mut self, frame: &Frame) {
+    pub fn clamp_to_frame(&mut self, frame: &DrawFrame) {
         if self.pos.x < 1. {
             self.pos.x = 1.;
         } else if self.pos.x > frame.width() - 1. {
@@ -81,7 +82,7 @@ impl Boid {
         &self,
         deltatime: Duration,
         neighbours: impl Iterator<Item = &'a Boid>,
-        frame: &Frame,
+        frame: &DrawFrame,
     ) -> Self {
         let mut new_boid = self.clone();
         let mut acceleration = Vec2::new(0., 0.);
@@ -162,7 +163,7 @@ impl Boid {
         new_boid
     }
 
-    pub fn draw(&self, frame: Frame) {
+    pub fn draw(&self, frame: DrawFrame) {
         let heading = self.heading();
 
         let v1 = frame.pos() + self.pos + heading.rotate(Vec2::new(BOID_HEIGHT / 2.0, 0.0));
@@ -184,14 +185,14 @@ impl PartialEq for Boid {
 }
 
 pub struct Boids {
-    layout: Layout,
+    layout: DrawFrameLayout,
     boids: DoubleBuffer<Vec<Boid>>,
     chunks: Grid<Vec<usize>>,
     last_update: Instant,
 }
 
 impl Boids {
-    pub fn new(mut layout: Layout, boids: Vec<Boid>) -> Self {
+    pub fn new(mut layout: DrawFrameLayout, boids: Vec<Boid>) -> Self {
         layout.refresh();
 
         let boids = DoubleBuffer::new(boids);
@@ -208,7 +209,7 @@ impl Boids {
         }
     }
 
-    pub fn init(mut layout: Layout, num_boids: usize) -> Self {
+    pub fn init(mut layout: DrawFrameLayout, num_boids: usize) -> Self {
         layout.refresh();
 
         let mut boids = Vec::new();
@@ -248,13 +249,13 @@ impl Boids {
         }
     }
 
-    fn frame(&self) -> Frame {
+    fn frame(&self) -> DrawFrame {
         self.layout.frame
     }
 }
 
 impl Draw for Boids {
-    fn draw(&self) {
+    fn draw(&self, _frame: &mut Frame) {
         for boid in self.boids.state() {
             boid.draw(self.frame());
         }
@@ -262,7 +263,7 @@ impl Draw for Boids {
 }
 
 impl Update for Boids {
-    fn update(&mut self) {
+    fn update(&mut self, frame: &Frame) {
         let update_start = Instant::now();
         let deltatime = update_start - self.last_update;
 

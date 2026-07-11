@@ -1,6 +1,5 @@
 #![allow(unused)]
 
-use crate::traits::{Iterate, Update};
 use std::borrow::Borrow;
 use std::borrow::BorrowMut;
 
@@ -42,16 +41,8 @@ impl<T> DoubleBuffer<T> {
     pub fn swap(&mut self) {
         std::mem::swap(&mut self.current, &mut self.next);
     }
-}
 
-impl<T> Update for DoubleBuffer<T>
-where
-    T: Iterate,
-{
-    fn update(&mut self) {
-        self.current.iterate(&mut self.next);
-        self.swap();
-    }
+    pub fn update(&mut self) {}
 }
 
 impl<T> From<T> for DoubleBuffer<T>

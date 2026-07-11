@@ -1,8 +1,9 @@
 use crate::buffer::DoubleBuffer;
+use crate::frame::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
-use crate::Frame;
-use crate::Layout;
+use crate::DrawFrame;
+use crate::DrawFrameLayout;
 
 use macroquad::prelude::*;
 use rayon::prelude::*;
@@ -102,7 +103,7 @@ impl Default for Cell {
 
 #[derive(Clone, Debug)]
 pub struct Conway {
-    layout: Layout,
+    layout: DrawFrameLayout,
     rule: Rule,
     buffer: DoubleBuffer<Grid<Cell>>,
     width: usize,
@@ -112,7 +113,7 @@ pub struct Conway {
 
 impl Conway {
     fn new(
-        mut layout: Layout,
+        mut layout: DrawFrameLayout,
         rulestring: &str,
         grid: Grid<Cell>,
         width: usize,
@@ -133,7 +134,7 @@ impl Conway {
     }
 
     pub fn random(
-        layout: Layout,
+        layout: DrawFrameLayout,
         rulestring: &str,
         fill_percent: f32,
         width: usize,
@@ -191,13 +192,13 @@ impl Conway {
         self.buffer.state().get(x, y)
     }
 
-    fn frame(&self) -> &Frame {
+    fn frame(&self) -> &DrawFrame {
         &self.layout.frame
     }
 }
 
 impl Draw for Conway {
-    fn draw(&self) {
+    fn draw(&self, _frame: &mut Frame) {
         let column_width = self.frame().width() / self.width as f32;
         let row_height = self.frame().height() / self.height as f32;
 
@@ -223,7 +224,7 @@ impl Draw for Conway {
 }
 
 impl Update for Conway {
-    fn update(&mut self) {
+    fn update(&mut self, _frame: &Frame) {
         self.layout.refresh();
 
         let update_start = Instant::now();

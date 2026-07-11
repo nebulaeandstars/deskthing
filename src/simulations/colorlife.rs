@@ -1,8 +1,9 @@
 use crate::buffer::DoubleBuffer;
-use crate::frame::Layout;
+use crate::frame::DrawFrameLayout;
+use crate::frame::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
-use crate::Frame;
+use crate::DrawFrame;
 
 use macroquad::prelude::*;
 use rayon::prelude::*;
@@ -84,7 +85,7 @@ impl Creature {
         }
     }
 
-    pub fn clamp_to_frame(&mut self, frame: &Frame) {
+    pub fn clamp_to_frame(&mut self, frame: &DrawFrame) {
         if self.pos.x < 1. {
             self.pos.x = 1.;
         } else if self.pos.x > frame.width() - 1. {
@@ -110,7 +111,7 @@ impl Creature {
         &self,
         deltatime: Duration,
         neighbours: impl Iterator<Item = &'a Creature>,
-        frame: &Frame,
+        frame: &DrawFrame,
     ) -> Self {
         let mut new_creature = self.clone();
         let mut acceleration = Vec2::new(0., 0.);
@@ -166,7 +167,7 @@ impl Creature {
         new_creature
     }
 
-    pub fn draw(&self, frame: Frame) {
+    pub fn draw(&self, frame: DrawFrame) {
         // draw_circle(
         //     self.pos.x + frame.x(),
         //     self.pos.y + frame.y(),
@@ -185,14 +186,14 @@ impl Creature {
 }
 
 pub struct Colorlife {
-    layout: Layout,
+    layout: DrawFrameLayout,
     creatures: DoubleBuffer<Vec<Creature>>,
     chunks: Grid<Vec<usize>>,
     last_update: Instant,
 }
 
 impl Colorlife {
-    pub fn new(mut layout: Layout, creatures: Vec<Creature>) -> Self {
+    pub fn new(mut layout: DrawFrameLayout, creatures: Vec<Creature>) -> Self {
         layout.refresh();
 
         let creatures = DoubleBuffer::new(creatures);
@@ -209,7 +210,7 @@ impl Colorlife {
         }
     }
 
-    pub fn init(mut layout: Layout, num_creatures: usize) -> Self {
+    pub fn init(mut layout: DrawFrameLayout, num_creatures: usize) -> Self {
         layout.refresh();
 
         let mut creatures = Vec::new();
@@ -250,13 +251,13 @@ impl Colorlife {
         }
     }
 
-    fn frame(&self) -> Frame {
+    fn frame(&self) -> DrawFrame {
         self.layout.frame
     }
 }
 
 impl Draw for Colorlife {
-    fn draw(&self) {
+    fn draw(&self, _frame: &mut Frame) {
         for creature in self.creatures.state() {
             creature.draw(self.frame());
         }
@@ -264,7 +265,7 @@ impl Draw for Colorlife {
 }
 
 impl Update for Colorlife {
-    fn update(&mut self) {
+    fn update(&mut self, _frame: &Frame) {
         let update_start = Instant::now();
         let deltatime = update_start - self.last_update;
 
