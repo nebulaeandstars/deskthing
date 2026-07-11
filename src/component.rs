@@ -213,6 +213,7 @@ impl Frame {
         self.size = vec2(width, height);
     }
 
+    #[allow(unused)]
     pub fn camera(&mut self) -> &mut Camera2D {
         &mut self.camera
     }

@@ -20,7 +20,7 @@ const DELTA_DAMPENING_FACTOR: f32 = 0.8;
 const VELOCITY_DAMPENING_FACTOR: f32 = 0.98;
 
 const PARTICLE_MASS: f32 = 1.;
-const GRAVITY: f32 = 100.;
+const GRAVITY: f32 = 0.;
 
 const RESTITUTION_COEFFICIENT: f32 = 0.3;
 
@@ -397,6 +397,7 @@ impl FluidSim {
         }
     }
 
+    #[allow(unused)]
     fn draw_fluid_texture(&self, camera: &mut Camera2D) {
         let target = camera.render_target.take();
         camera.render_target = Some(self.fluid_render_target.clone());
@@ -428,8 +429,14 @@ impl FluidSim {
         gl_use_default_material();
     }
 
+    #[allow(unused)]
     fn draw_particles(&self, relative_mouse_pos: Vec2) {
-        for particle in &self.particles {
+        for (i, particle) in self.particles.iter().enumerate() {
+            let density = self.densities[i];
+            let speed = particle.vel.length();
+            let red = (density * 60.).max(0.).min(1.);
+            let green = (speed / 100.).max(0.).min(1.);
+
             if (relative_mouse_pos - particle.pos).length() < SMOOTHING_RADIUS {
                 draw_circle(
                     particle.pos.x,
@@ -442,7 +449,7 @@ impl FluidSim {
                     particle.pos.x,
                     particle.pos.y,
                     3.,
-                    Color::new(0.2, 0.6, 0.8, 0.8),
+                    Color::new(red, green, 1., 0.8),
                 );
             }
         }
@@ -488,7 +495,7 @@ impl Update for FluidSim {
 impl Draw for FluidSim {
     fn draw(&self, frame: &mut Frame) {
         let mouse_pos = frame.relative_mouse_pos();
-        self.draw_fluid_texture(frame.camera());
+        // self.draw_fluid_texture(frame.camera());
         self.draw_particles(mouse_pos);
     }
 }
