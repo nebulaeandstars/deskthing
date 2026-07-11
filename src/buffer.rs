@@ -35,7 +35,7 @@ impl<T> DoubleBuffer<T> {
     }
 
     pub fn set(&mut self, next: T) {
-        self.current = next
+        self.current = next;
     }
 
     pub fn swap(&mut self) {

@@ -29,12 +29,12 @@ impl Rule {
 
         births
             .chars()
-            .filter(|c| c.is_digit(10))
+            .filter(char::is_ascii_digit)
             .map(|c| c.to_digit(10).unwrap())
             .for_each(|d| rule.birth_rule[d as usize] = true);
         survival
             .chars()
-            .filter(|c| c.is_digit(10))
+            .filter(char::is_ascii_digit)
             .map(|c| c.to_digit(10).unwrap())
             .for_each(|d| rule.death_rule[d as usize] = true);
 
@@ -85,7 +85,7 @@ impl Cell {
     }
 
     pub fn random() -> Self {
-        Cell::new(rand::rand() % 2 == 0)
+        Cell::new(rand::rand().is_multiple_of(2))
     }
 
     pub fn is_alive(&self) -> bool {
@@ -183,12 +183,10 @@ impl Draw for Conway {
 
                 if cell.is_alive() {
                     draw_rectangle(column as f32, row as f32, 1., 1., ALIVE_COLOR);
-                } else {
-                    if cell.ghost.is_some_and(|ghost| ghost < 10) {
-                        let alpha = 1.0 - ((cell.ghost.unwrap() as f32 + 1.) / 5.);
-                        let color = GHOST_COLOR.with_alpha(alpha);
-                        draw_rectangle(column as f32, row as f32, 1., 1., color);
-                    }
+                } else if cell.ghost.is_some_and(|ghost| ghost < 10) {
+                    let alpha = 1.0 - ((cell.ghost.unwrap() as f32 + 1.) / 5.);
+                    let color = GHOST_COLOR.with_alpha(alpha);
+                    draw_rectangle(column as f32, row as f32, 1., 1., color);
                 }
             }
         }

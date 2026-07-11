@@ -33,7 +33,7 @@ impl<T: Default> Grid<T> {
         self.inner.reserve(columns * rows);
 
         for _ in self.inner.len()..(columns * rows) {
-            self.inner.push(T::default())
+            self.inner.push(T::default());
         }
     }
 }

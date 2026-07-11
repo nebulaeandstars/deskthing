@@ -70,9 +70,9 @@ impl Boid {
 
     pub fn clamp_speed(&mut self) {
         if self.vel.length() < BOID_MIN_SPEED {
-            self.vel = self.vel.normalize() * BOID_MIN_SPEED
+            self.vel = self.vel.normalize() * BOID_MIN_SPEED;
         } else if self.vel.length() > BOID_MAX_SPEED {
-            self.vel = self.vel.normalize() * BOID_MAX_SPEED
+            self.vel = self.vel.normalize() * BOID_MAX_SPEED;
         }
     }
 
@@ -225,7 +225,7 @@ impl Boids {
 
         // Reset all chunks.
         for chunk in self.chunks.iter_mut() {
-            chunk.clear()
+            chunk.clear();
         }
 
         // Grow the grid if needed (eg. if the frame size increases)

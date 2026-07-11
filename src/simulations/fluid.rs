@@ -47,9 +47,9 @@ impl FluidParticle {
 
     pub fn clamp_speed(&mut self) {
         if self.vel.length() < MIN_SPEED {
-            self.vel = self.vel.normalize() * MIN_SPEED
+            self.vel = self.vel.normalize() * MIN_SPEED;
         } else if self.vel.length() > MAX_SPEED {
-            self.vel = self.vel.normalize() * MAX_SPEED
+            self.vel = self.vel.normalize() * MAX_SPEED;
         }
     }
 
@@ -159,7 +159,7 @@ impl FluidSim {
 
         // Reset all chunks.
         for chunk in self.chunks.iter_mut() {
-            chunk.clear()
+            chunk.clear();
         }
 
         // Grow the grid if needed (eg. if the frame size increases)
@@ -182,10 +182,12 @@ impl FluidSim {
         self.particles.par_iter_mut().for_each(|particle| {
             particle.apply_gravity(deltatime);
             particle.reset_predicted_pos(deltatime);
-        })
+        });
     }
 
     fn update_densities(&mut self) {
+        const EPSILON: f32 = 1e-6;
+
         let particles = &self.particles;
         let chunks = &self.chunks;
 
@@ -225,7 +227,6 @@ impl FluidSim {
 
                 let constraint = local_density / REST_DENSITY - 1.;
 
-                const EPSILON: f32 = 1e-6;
                 let calculated_lambda = -constraint / (gradient_sum + EPSILON);
 
                 *density = local_density;
@@ -276,7 +277,7 @@ impl FluidSim {
             .enumerate()
             .for_each(|(i, particle)| {
                 particle.predicted_pos += position_deltas[i] * DELTA_DAMPENING_FACTOR;
-            })
+            });
     }
 
     fn calculate_viscosity_forces(&mut self) {
@@ -373,24 +374,24 @@ impl FluidSim {
     }
 
     fn apply_external_forces(&mut self, mouse_pos: Vec2) {
-        self.apply_mouse_interaction_forces(mouse_pos)
+        self.apply_mouse_interaction_forces(mouse_pos);
     }
 
     fn apply_mouse_interaction_forces(&mut self, mouse_pos: Vec2) {
         const MOUSE_FORCE: f32 = 1000.;
         if is_mouse_button_down(MouseButton::Left) {
-            for particle in self.particles.iter_mut() {
+            for particle in &mut self.particles {
                 let displacement = mouse_pos - particle.pos;
 
-                if (Vec2::from(mouse_pos) - particle.pos).length() < SMOOTHING_RADIUS {
+                if (mouse_pos - particle.pos).length() < SMOOTHING_RADIUS {
                     particle.vel -= (displacement / SMOOTHING_RADIUS) * -MOUSE_FORCE;
                 }
             }
         } else if is_mouse_button_down(MouseButton::Right) {
-            for particle in self.particles.iter_mut() {
+            for particle in &mut self.particles {
                 let displacement = mouse_pos - particle.pos;
 
-                if (Vec2::from(mouse_pos) - particle.pos).length() < SMOOTHING_RADIUS {
+                if (mouse_pos - particle.pos).length() < SMOOTHING_RADIUS {
                     particle.vel -= (displacement / SMOOTHING_RADIUS) * MOUSE_FORCE;
                 }
             }
@@ -434,8 +435,8 @@ impl FluidSim {
         for (i, particle) in self.particles.iter().enumerate() {
             let density = self.densities[i];
             let speed = particle.vel.length();
-            let red = (density * 60.).max(0.).min(1.);
-            let green = (speed / 100.).max(0.).min(1.);
+            let red = (density * 60.).clamp(0., 1.);
+            let green = (speed / 100.).clamp(0., 1.);
 
             if (relative_mouse_pos - particle.pos).length() < SMOOTHING_RADIUS {
                 draw_circle(

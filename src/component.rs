@@ -85,7 +85,7 @@ impl ComponentFrame {
     }
 
     pub fn update(&mut self) {
-        self.component.update(&self.frame)
+        self.component.update(&self.frame);
     }
 
     pub fn draw_outline(&self, thickness: f32, color: Color) {

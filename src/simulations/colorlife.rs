@@ -36,7 +36,7 @@ impl CreatureType {
         }
     }
 
-    pub fn force_on(&self, other: CreatureType) -> f32 {
+    pub fn force_on(self, other: CreatureType) -> f32 {
         use CreatureType::*;
 
         match (self, other) {
@@ -52,8 +52,8 @@ impl CreatureType {
         }
     }
 
-    pub fn color(&self) -> Color {
-        match &self {
+    pub fn color(self) -> Color {
+        match self {
             Self::Red => Color::from_hex(0xaa4444),
             Self::Green => Color::from_hex(0x44aa44),
             Self::Blue => Color::from_hex(0x4444aa),
@@ -99,9 +99,9 @@ impl Creature {
 
     pub fn clamp_speed(&mut self) {
         if self.vel.length() < MIN_SPEED {
-            self.vel = self.vel.normalize() * MIN_SPEED
+            self.vel = self.vel.normalize() * MIN_SPEED;
         } else if self.vel.length() > MAX_SPEED {
-            self.vel = self.vel.normalize() * MAX_SPEED
+            self.vel = self.vel.normalize() * MAX_SPEED;
         }
     }
 
@@ -231,7 +231,7 @@ impl Colorlife {
 
         // Reset all chunks.
         for chunk in self.chunks.iter_mut() {
-            chunk.clear()
+            chunk.clear();
         }
 
         // Grow the grid if needed (eg. if the frame size increases)
