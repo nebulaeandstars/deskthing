@@ -1,6 +1,7 @@
 mod buffer;
 mod frame;
 mod grid;
+mod shaders;
 mod simulations;
 mod traits;
 
