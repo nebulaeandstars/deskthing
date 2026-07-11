@@ -13,7 +13,7 @@ const MIN_SPEED: f32 = 0.0;
 const MAX_SPEED: f32 = 200.0;
 
 const SMOOTHING_RADIUS: f32 = 50.;
-const REST_DENSITY: f32 = 50.;
+const REST_DENSITY: f32 = 20.;
 const VISCOSITY: f32 = 0.01;
 
 const DELTA_DAMPENING_FACTOR: f32 = 0.8;
@@ -441,7 +441,7 @@ impl FluidSim {
                     particle.pos.x,
                     particle.pos.y,
                     3.,
-                    Color::new(0.2, 0.6, 0.8, 0.6),
+                    Color::new(0.2, 0.6, 0.8, 0.8),
                 );
             }
         }
@@ -487,12 +487,7 @@ impl Update for FluidSim {
 impl Draw for FluidSim {
     fn draw(&self, frame: &mut Frame) {
         let mouse_pos = frame.relative_mouse_pos();
-        let camera = frame.camera();
-
-        set_camera(camera);
-        clear_background(BLANK);
-
-        self.draw_fluid_texture(camera);
+        self.draw_fluid_texture(frame.camera());
         self.draw_particles(mouse_pos);
     }
 }
