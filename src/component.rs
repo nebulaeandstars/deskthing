@@ -81,7 +81,7 @@ impl ComponentFrame {
     }
 
     pub fn set_component<T: Component>(&mut self, component: T) {
-        *self = Self::new(component, self.pos(), self.size())
+        *self = Self::new(component, self.pos(), self.size());
     }
 
     pub fn update(&mut self) {

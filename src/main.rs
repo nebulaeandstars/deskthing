@@ -1,3 +1,19 @@
+#![allow(
+    clippy::wildcard_imports,
+    clippy::enum_glob_use,
+    clippy::unused_self,
+    clippy::struct_field_names,
+    clippy::match_same_arms,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::unreadable_literal,
+    clippy::needless_raw_string_hashes
+)]
+#![warn(clippy::style, clippy::perf, clippy::complexity)]
+#![deny(clippy::correctness, clippy::suspicious)]
+
 mod buffer;
 mod component;
 mod grid;

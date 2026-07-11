@@ -4,6 +4,7 @@ use crate::shaders::liquid_material;
 use crate::traits::*;
 
 use macroquad::prelude::*;
+use macroquad::rand::RandomRange;
 use rayon::prelude::*;
 use std::time::{Duration, Instant};
 
@@ -281,6 +282,8 @@ impl FluidSim {
     }
 
     fn calculate_viscosity_forces(&mut self) {
+        const EPSILON: f32 = 1e-3;
+
         let particles = &self.particles;
         let chunks = &self.chunks;
 
@@ -305,12 +308,20 @@ impl FluidSim {
                         let distance_squared = displacement.length_squared();
 
                         if i != j {
-                            let distance = distance_squared.sqrt();
+                            // Nudge overlapping particles
+                            if distance_squared == 0. {
+                                let nudge_x = RandomRange::gen_range(-EPSILON, EPSILON);
+                                let nudge_y = RandomRange::gen_range(-EPSILON, EPSILON);
+                                let nudge = vec2(nudge_x, nudge_y);
+                                weighted_velocity += nudge;
+                            } else {
+                                let distance = distance_squared.sqrt();
 
-                            if distance < SMOOTHING_RADIUS {
-                                let w = Self::smoothing_kernel(distance);
-                                weighted_velocity += particles[j].vel * w;
-                                sum_of_weights += w;
+                                if distance < SMOOTHING_RADIUS {
+                                    let w = Self::smoothing_kernel(distance);
+                                    weighted_velocity += particles[j].vel * w;
+                                    sum_of_weights += w;
+                                }
                             }
                         }
                     }
@@ -431,28 +442,73 @@ impl FluidSim {
     }
 
     #[allow(unused)]
-    fn draw_particles(&self, relative_mouse_pos: Vec2) {
+    fn draw_particles(&self, _relative_mouse_pos: Vec2) {
         for (i, particle) in self.particles.iter().enumerate() {
             let density = self.densities[i];
             let speed = particle.vel.length();
             let red = (density * 60.).clamp(0., 1.);
             let green = (speed / 100.).clamp(0., 1.);
 
-            if (relative_mouse_pos - particle.pos).length() < SMOOTHING_RADIUS {
-                draw_circle(
-                    particle.pos.x,
-                    particle.pos.y,
-                    3.,
-                    Color::new(0.8, 0.2, 0.2, 0.6),
-                );
-            } else {
-                draw_circle(
-                    particle.pos.x,
-                    particle.pos.y,
-                    3.,
-                    Color::new(red, green, 1., 0.8),
-                );
-            }
+            // if (relative_mouse_pos - particle.pos).length() < SMOOTHING_RADIUS {
+            //     draw_circle(
+            //         particle.pos.x,
+            //         particle.pos.y,
+            //         3.,
+            //         Color::new(0.8, 0.2, 0.2, 0.6),
+            //     );
+            // } else {
+            draw_circle(
+                particle.pos.x,
+                particle.pos.y,
+                3.,
+                Color::new(red, green, 1., 0.8),
+            );
+            // }
+        }
+    }
+
+    #[allow(unused)]
+    fn draw_data_particles(&self) {
+        let min_density = self
+            .densities
+            .iter()
+            .reduce(|a, b| if a < b { a } else { b })
+            .unwrap();
+        let max_density = self
+            .densities
+            .iter()
+            .reduce(|a, b| if a > b { a } else { b })
+            .unwrap();
+        let min_speed = self
+            .particles
+            .iter()
+            .map(|particle| particle.vel.length_squared())
+            .reduce(|a, b| if a < b { a } else { b })
+            .unwrap()
+            .sqrt();
+        let max_speed = self
+            .particles
+            .iter()
+            .map(|particle| particle.vel.length_squared())
+            .reduce(|a, b| if a > b { a } else { b })
+            .unwrap()
+            .sqrt();
+
+        clear_background(BLANK);
+        for (i, particle) in self.particles.iter().enumerate() {
+            let density = self.densities[i];
+            let speed = particle.vel.length();
+
+            let red = ((speed - min_speed) / max_speed).clamp(0., 1.);
+            let green = ((density - min_density) / max_density).clamp(0., 1.);
+            let blue = 1.;
+
+            draw_circle(
+                particle.pos.x,
+                particle.pos.y,
+                3.,
+                Color::new(red, green, blue, 1.),
+            );
         }
     }
 }
@@ -497,7 +553,8 @@ impl Draw for FluidSim {
     fn draw(&self, frame: &mut Frame) {
         let mouse_pos = frame.relative_mouse_pos();
         // self.draw_fluid_texture(frame.camera());
-        self.draw_particles(mouse_pos);
+        // self.draw_particles(mouse_pos);
+        self.draw_data_particles();
     }
 }
 
