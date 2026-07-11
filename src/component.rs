@@ -1,74 +1,59 @@
-#![allow(unused)]
-
 use crate::traits::*;
-use crate::Draw;
 
 use macroquad::prelude::*;
-use macroquad::window;
+use std::fmt::Debug;
 
 #[derive(Debug)]
-pub struct Component<T> {
-    inner: T,
+pub struct ComponentFrame {
+    component: Box<dyn Component>,
     frame: Frame,
 }
 
-impl<T: HasSize> Component<T> {
-    pub fn new(object: T, pos: Vec2, size: Vec2) -> Self {
-        let frame = Frame::new(vec2(object.width(), object.height()), pos, size);
+#[allow(unused)]
+impl ComponentFrame {
+    pub fn new<T: Component>(component: T, pos: Vec2, size: Vec2) -> Self {
+        let frame = Frame::new(vec2(component.width(), component.height()), pos, size);
         Self {
-            inner: object,
+            component: Box::new(component),
             frame,
         }
     }
 
-    pub fn relative(
-        object: T,
+    pub fn relative<T: Component>(
+        component: T,
         parent_pos: Vec2,
         parent_size: Vec2,
         relative_frame_pos: Vec2,
         relative_frame_size: Vec2,
     ) -> Self {
-        let object_size = vec2(object.width(), object.height());
+        let component_size = vec2(component.width(), component.height());
 
         let frame = Frame::relative_to(
             parent_pos,
             parent_size,
-            object_size,
+            component_size,
             relative_frame_pos,
             relative_frame_size,
         );
 
         Self {
-            inner: object,
+            component: Box::new(component),
             frame,
         }
     }
 
-    pub fn relative_to_screen(
-        object: T,
+    pub fn relative_to_screen<T: Component>(
+        component: T,
         relative_frame_pos: Vec2,
         relative_frame_size: Vec2,
     ) -> Self {
         Self::relative(
-            object,
+            component,
             vec2(0., 0.),
             vec2(screen_width(), screen_height()),
             relative_frame_pos,
             relative_frame_size,
         )
-    }
-}
-
-impl<T> Component<T> {
-    pub fn draw_outline(&self, thickness: f32, color: Color) {
-        draw_rectangle_lines(
-            self.x(),
-            self.y(),
-            self.width(),
-            self.height(),
-            thickness,
-            color,
-        );
     }
 
     pub fn refit_to(
@@ -94,22 +79,33 @@ impl<T> Component<T> {
             relative_frame_size,
         );
     }
-}
 
-impl<T: Update> Component<T> {
-    pub fn update(&mut self) {
-        self.inner.update(&self.frame)
+    pub fn set_component<T: Component>(&mut self, component: T) {
+        *self = Self::new(component, self.pos(), self.size())
     }
-}
 
-impl<T: Draw> Component<T> {
+    pub fn update(&mut self) {
+        self.component.update(&self.frame)
+    }
+
+    pub fn draw_outline(&self, thickness: f32, color: Color) {
+        draw_rectangle_lines(
+            self.x(),
+            self.y(),
+            self.width(),
+            self.height(),
+            thickness,
+            color,
+        );
+    }
+
     pub fn draw(&mut self) {
         // Start using the component's camera,
         set_camera(&self.frame.camera);
         clear_background(BLANK);
 
         // render the internal drawable object to the camera,
-        self.inner.draw(&mut self.frame);
+        self.component.draw(&mut self.frame);
 
         // then draw it.
         set_default_camera();
@@ -131,13 +127,13 @@ impl<T: Draw> Component<T> {
     }
 }
 
-impl<T> HasPosition for Component<T> {
+impl HasPosition for ComponentFrame {
     fn pos(&self) -> Vec2 {
         self.frame.pos()
     }
 }
 
-impl<T> HasSize for Component<T> {
+impl HasSize for ComponentFrame {
     fn size(&self) -> Vec2 {
         self.frame.size()
     }
@@ -238,131 +234,5 @@ impl HasPosition for Frame {
 impl HasSize for Frame {
     fn size(&self) -> Vec2 {
         self.size
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DrawFrameLayout {
-    pub parent: Option<DrawFrame>,
-    pub frame: DrawFrame,
-    x_percent: f32,
-    y_percent: f32,
-    width_percent: f32,
-    height_percent: f32,
-}
-
-#[allow(unused)]
-impl DrawFrameLayout {
-    pub fn new(
-        parent: Option<DrawFrame>,
-        x_percent: f32,
-        y_percent: f32,
-        width_percent: f32,
-        height_percent: f32,
-    ) -> Self {
-        let frame = DrawFrame::relative(
-            parent.unwrap_or_default(),
-            x_percent,
-            y_percent,
-            width_percent,
-            height_percent,
-        );
-
-        Self {
-            parent,
-            frame,
-            x_percent,
-            y_percent,
-            width_percent,
-            height_percent,
-        }
-    }
-
-    pub fn without_parent(
-        x_percent: f32,
-        y_percent: f32,
-        width_percent: f32,
-        height_percent: f32,
-    ) -> Self {
-        Self::new(None, x_percent, y_percent, width_percent, height_percent)
-    }
-
-    pub fn with_parent(
-        parent: DrawFrame,
-        x_percent: f32,
-        y_percent: f32,
-        width_percent: f32,
-        height_percent: f32,
-    ) -> Self {
-        Self::new(
-            Some(parent),
-            x_percent,
-            y_percent,
-            width_percent,
-            height_percent,
-        )
-    }
-
-    pub fn refresh(&mut self) {
-        self.frame = DrawFrame::relative(
-            self.parent.unwrap_or_default(),
-            self.x_percent,
-            self.y_percent,
-            self.width_percent,
-            self.height_percent,
-        );
-    }
-
-    pub fn update_parent(&mut self, parent: DrawFrame) {
-        self.parent = Some(parent);
-        self.refresh();
-    }
-}
-
-/// A sub-window containing multiple components.
-#[derive(Clone, Copy, Debug)]
-pub struct DrawFrame {
-    pos: Vec2,
-    size: Vec2,
-}
-
-impl DrawFrame {
-    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self {
-            pos: Vec2::new(x, y),
-            size: Vec2::new(width, height),
-        }
-    }
-
-    pub fn relative(
-        frame: DrawFrame,
-        x_percent: f32,
-        y_percent: f32,
-        width_percent: f32,
-        height_percent: f32,
-    ) -> Self {
-        let x = frame.pos.x + x_percent * frame.width();
-        let y = frame.pos.y + y_percent * frame.height();
-        let width = width_percent * frame.width();
-        let height = height_percent * frame.height();
-        Self::new(x, y, width, height)
-    }
-}
-
-impl HasPosition for DrawFrame {
-    fn pos(&self) -> Vec2 {
-        self.pos
-    }
-}
-
-impl HasSize for DrawFrame {
-    fn size(&self) -> Vec2 {
-        self.size
-    }
-}
-
-impl Default for DrawFrame {
-    fn default() -> Self {
-        Self::new(0., 0., window::screen_width(), window::screen_height())
     }
 }

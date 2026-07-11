@@ -1,4 +1,4 @@
-use crate::frame::Frame;
+use crate::component::Frame;
 use crate::grid::Grid;
 use crate::shaders::liquid_material;
 use crate::traits::*;
@@ -98,6 +98,7 @@ impl FluidParticle {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct FluidSim {
     sim_width: f32,
     sim_height: f32,

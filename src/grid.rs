@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use crate::frame::Frame;
+use crate::component::Frame;
 use crate::traits::*;
 
 use macroquad::prelude::*;
@@ -114,7 +114,6 @@ impl<T> Grid<T> {
         self.get(column, row)
     }
 
-    /// position.
     pub fn get_mut_by_pos(&mut self, pos: Vec2, grid_pos: Vec2, grid_size: Vec2) -> Option<&mut T> {
         let (column, row) = self.get_coords(pos, grid_pos, grid_size);
         self.get_mut(column, row)

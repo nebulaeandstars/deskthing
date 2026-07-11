@@ -1,5 +1,6 @@
-use crate::frame::Frame;
+use crate::component::Frame;
 use macroquad::prelude::*;
+use std::fmt::Debug;
 
 pub trait Draw {
     fn draw(&self, frame: &mut Frame);
@@ -32,3 +33,7 @@ pub trait HasPosition {
         self.pos().y
     }
 }
+
+pub trait Component: HasSize + Draw + Update + Debug + 'static {}
+
+impl<T> Component for T where T: HasSize + Draw + Update + Debug + 'static {}

@@ -1,5 +1,5 @@
 use crate::buffer::DoubleBuffer;
-use crate::frame::Frame;
+use crate::component::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
 

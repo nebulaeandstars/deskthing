@@ -1,12 +1,12 @@
 mod buffer;
-mod frame;
+mod component;
 mod grid;
 mod shaders;
 mod simulations;
 mod traits;
 
+use component::ComponentFrame;
 use simulations::*;
-use traits::*;
 
 use macroquad::prelude::*;
 
@@ -25,7 +25,7 @@ async fn main() {
     const SIM_WIDTH: f32 = 400.;
     const SIM_HEIGHT: f32 = 300.;
 
-    let _conway = frame::Component::relative_to_screen(
+    let mut sim = ComponentFrame::relative_to_screen(
         Conway::random(
             _CONWAY,
             CONWAY_FILL_PERCENT,
@@ -36,72 +36,23 @@ async fn main() {
         vec2(0.6, 0.6),
     );
 
-    let _boids = frame::Component::relative_to_screen(
-        Boids::init(NUM_BOIDS, SIM_WIDTH, SIM_HEIGHT),
-        vec2(0.2, 0.2),
-        vec2(0.6, 0.6),
-    );
-
-    let _colorlife = frame::Component::relative_to_screen(
-        Colorlife::init(COLORLIFE_PARTICLES, SIM_WIDTH, SIM_HEIGHT),
-        vec2(0.2, 0.2),
-        vec2(0.6, 0.6),
-    );
-
-    let fluidsim = frame::Component::relative_to_screen(
-        FluidSim::init(FLUID_PARTICLES, SIM_WIDTH, SIM_HEIGHT),
-        vec2(0.2, 0.2),
-        vec2(0.6, 0.6),
-    );
-
-    let target = render_target(512, 512);
-    target.texture.set_filter(FilterMode::Nearest);
-
-    let mut sim = fluidsim;
-
     loop {
-        // if is_key_pressed(KeyCode::A) {
-        //     components.add(
-        //         "simulation-content",
-        //         Conway::random(
-        //             simulation,
-        //             _CONWAY,
-        //             CONWAY_FILL_PERCENT,
-        //             CONWAY_DIMENSIONS.0,
-        //             CONWAY_DIMENSIONS.1,
-        //         ),
-        //     );
-        // }
-
-        // if is_key_pressed(KeyCode::B) {
-        //     sim_frame = frame::Component::relative_to_screen(
-        //         Boids::init(NUM_BOIDS, SIM_WIDTH, SIM_HEIGHT),
-        //         vec2(0.2, 0.2),
-        //         vec2(0.6, 0.6),
-        //     );
-        // }
-
-        // if is_key_pressed(KeyCode::C) {
-        //     components.add(
-        //         "simulation-content",
-        //         Colorlife::init(simulation, COLORLIFE_PARTICLES),
-        //     );
-        // }
-
-        // if is_key_pressed(KeyCode::D) {
-        //     sim_frame = frame::Component::relative_to_screen(
-        //         FluidSim::init(FLUID_PARTICLES, SIM_WIDTH, SIM_HEIGHT),
-        //         vec2(0.2, 0.2),
-        //         vec2(0.6, 0.6),
-        //     );
-        // }
+        if is_key_pressed(KeyCode::A) {
+            sim.set_component(Conway::random(
+                _CONWAY,
+                CONWAY_FILL_PERCENT,
+                CONWAY_DIMENSIONS.0,
+                CONWAY_DIMENSIONS.1,
+            ));
+        } else if is_key_pressed(KeyCode::B) {
+            sim.set_component(Boids::init(NUM_BOIDS, SIM_WIDTH, SIM_HEIGHT));
+        } else if is_key_pressed(KeyCode::C) {
+            sim.set_component(Colorlife::init(COLORLIFE_PARTICLES, SIM_WIDTH, SIM_HEIGHT));
+        } else if is_key_pressed(KeyCode::D) {
+            sim.set_component(FluidSim::init(FLUID_PARTICLES, SIM_WIDTH, SIM_HEIGHT));
+        }
 
         clear_background(BG_COLOR);
-
-        // TODO: remove
-        // simulation.refresh();
-        // fluid_sim.update();
-
         sim.refit_to_screen(vec2(0.2, 0.2), vec2(0.6, 0.6));
         sim.update();
         sim.draw();

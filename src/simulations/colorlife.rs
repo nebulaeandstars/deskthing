@@ -1,5 +1,5 @@
 use crate::buffer::DoubleBuffer;
-use crate::frame::Frame;
+use crate::component::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
 
@@ -184,6 +184,7 @@ impl Creature {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Colorlife {
     sim_width: f32,
     sim_height: f32,
