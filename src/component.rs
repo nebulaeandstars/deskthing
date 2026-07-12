@@ -84,10 +84,6 @@ impl ComponentFrame {
         *self = Self::new(component, self.pos(), self.size());
     }
 
-    pub fn update(&mut self) {
-        self.component.update(&self.frame);
-    }
-
     pub fn draw_outline(&self, thickness: f32, color: Color) {
         draw_rectangle_lines(
             self.x(),
@@ -98,14 +94,34 @@ impl ComponentFrame {
             color,
         );
     }
+}
 
-    pub fn draw(&mut self) {
+impl HasPosition for ComponentFrame {
+    fn pos(&self) -> Vec2 {
+        self.frame.pos()
+    }
+}
+
+impl HasSize for ComponentFrame {
+    fn size(&self) -> Vec2 {
+        self.frame.size()
+    }
+}
+
+impl Update for ComponentFrame {
+    fn update(&mut self) {
+        self.component.update_with_context(&self.frame);
+    }
+}
+
+impl Draw for ComponentFrame {
+    fn draw(&mut self) {
         // Start using the component's camera,
         set_camera(&self.frame.camera);
         clear_background(BLANK);
 
         // render the internal drawable object to the camera,
-        self.component.draw(&mut self.frame);
+        self.component.draw_with_context(&mut self.frame);
 
         // then draw it.
         set_default_camera();
@@ -124,18 +140,6 @@ impl ComponentFrame {
                 ..Default::default()
             },
         );
-    }
-}
-
-impl HasPosition for ComponentFrame {
-    fn pos(&self) -> Vec2 {
-        self.frame.pos()
-    }
-}
-
-impl HasSize for ComponentFrame {
-    fn size(&self) -> Vec2 {
-        self.frame.size()
     }
 }
 

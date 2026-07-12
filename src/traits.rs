@@ -3,11 +3,37 @@ use macroquad::prelude::*;
 use std::fmt::Debug;
 
 pub trait Draw {
-    fn draw(&self, frame: &mut Frame);
+    fn draw(&mut self);
+}
+
+pub trait DrawWithContext {
+    fn draw_with_context(&mut self, context: &mut Frame);
+}
+
+impl<T> DrawWithContext for T
+where
+    T: Draw,
+{
+    fn draw_with_context(&mut self, _context: &mut Frame) {
+        self.draw();
+    }
 }
 
 pub trait Update {
-    fn update(&mut self, _frame: &Frame) {}
+    fn update(&mut self) {}
+}
+
+pub trait UpdateWithContext {
+    fn update_with_context(&mut self, context: &Frame);
+}
+
+impl<T> UpdateWithContext for T
+where
+    T: Update,
+{
+    fn update_with_context(&mut self, _context: &Frame) {
+        self.update();
+    }
 }
 
 pub trait HasSize {
@@ -34,6 +60,6 @@ pub trait HasPosition {
     }
 }
 
-pub trait Component: HasSize + Draw + Update + Debug + 'static {}
+pub trait Component: HasSize + DrawWithContext + UpdateWithContext + Debug + 'static {}
 
-impl<T> Component for T where T: HasSize + Draw + Update + Debug + 'static {}
+impl<T> Component for T where T: HasSize + DrawWithContext + UpdateWithContext + Debug + 'static {}

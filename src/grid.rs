@@ -273,6 +273,26 @@ impl<T> Grid<T> {
     }
 }
 
+impl<T> HasSize for Grid<T> {
+    fn size(&self) -> Vec2 {
+        vec2(self.columns as f32, self.rows as f32)
+    }
+}
+
+impl<T: DrawWithContext> DrawWithContext for Grid<T> {
+    fn draw_with_context(&mut self, context: &mut Frame) {
+        self.draw_gridlines(vec2(0., 0.), vec2(context.width(), context.height()));
+        self.iter_mut()
+            .for_each(|cell| cell.draw_with_context(context));
+    }
+}
+
+impl<T: Update> Update for Grid<T> {
+    fn update(&mut self) {
+        self.iter_mut().for_each(Update::update);
+    }
+}
+
 impl<T: Send + Sync> Grid<T> {
     pub fn par_iter(&self) -> rayon::slice::Iter<'_, T> {
         self.inner.par_iter()

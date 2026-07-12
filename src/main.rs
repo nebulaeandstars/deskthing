@@ -23,6 +23,7 @@ mod traits;
 
 use component::ComponentFrame;
 use simulations::*;
+use traits::*;
 
 use macroquad::prelude::*;
 

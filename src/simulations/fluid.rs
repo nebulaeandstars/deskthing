@@ -448,73 +448,20 @@ impl FluidSim {
             let speed = particle.vel.length();
             let red = (density * 60.).clamp(0., 1.);
             let green = (speed / 100.).clamp(0., 1.);
-
-            // if (relative_mouse_pos - particle.pos).length() < SMOOTHING_RADIUS {
-            //     draw_circle(
-            //         particle.pos.x,
-            //         particle.pos.y,
-            //         3.,
-            //         Color::new(0.8, 0.2, 0.2, 0.6),
-            //     );
-            // } else {
-            draw_circle(
-                particle.pos.x,
-                particle.pos.y,
-                3.,
-                Color::new(red, green, 1., 0.8),
-            );
-            // }
-        }
-    }
-
-    #[allow(unused)]
-    fn draw_data_particles(&self) {
-        let min_density = self
-            .densities
-            .iter()
-            .reduce(|a, b| if a < b { a } else { b })
-            .unwrap();
-        let max_density = self
-            .densities
-            .iter()
-            .reduce(|a, b| if a > b { a } else { b })
-            .unwrap();
-        let min_speed = self
-            .particles
-            .iter()
-            .map(|particle| particle.vel.length_squared())
-            .reduce(|a, b| if a < b { a } else { b })
-            .unwrap()
-            .sqrt();
-        let max_speed = self
-            .particles
-            .iter()
-            .map(|particle| particle.vel.length_squared())
-            .reduce(|a, b| if a > b { a } else { b })
-            .unwrap()
-            .sqrt();
-
-        clear_background(BLANK);
-        for (i, particle) in self.particles.iter().enumerate() {
-            let density = self.densities[i];
-            let speed = particle.vel.length();
-
-            let red = ((speed - min_speed) / max_speed).clamp(0., 1.);
-            let green = ((density - min_density) / max_density).clamp(0., 1.);
-            let blue = 1.;
+            let blue = (1.0 - density * 0.3).clamp(0.7, 1.0);
 
             draw_circle(
                 particle.pos.x,
                 particle.pos.y,
                 3.,
-                Color::new(red, green, blue, 1.),
+                Color::new(red, (green - red * 0.5).clamp(0.0, 1.0), blue, 0.8),
             );
         }
     }
 }
 
-impl Update for FluidSim {
-    fn update(&mut self, frame: &Frame) {
+impl UpdateWithContext for FluidSim {
+    fn update_with_context(&mut self, frame: &Frame) {
         let update_start = Instant::now();
         let deltatime = update_start - self.last_update;
 
@@ -549,12 +496,12 @@ impl Update for FluidSim {
     }
 }
 
-impl Draw for FluidSim {
-    fn draw(&self, frame: &mut Frame) {
+impl DrawWithContext for FluidSim {
+    fn draw_with_context(&mut self, frame: &mut Frame) {
         let mouse_pos = frame.relative_mouse_pos();
         // self.draw_fluid_texture(frame.camera());
-        // self.draw_particles(mouse_pos);
-        self.draw_data_particles();
+        self.draw_particles(mouse_pos);
+        // self.draw_data_particles();
     }
 }
 

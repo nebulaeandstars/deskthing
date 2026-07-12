@@ -1,5 +1,4 @@
 use crate::buffer::DoubleBuffer;
-use crate::component::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
 
@@ -176,7 +175,7 @@ impl Conway {
 }
 
 impl Draw for Conway {
-    fn draw(&self, _frame: &mut Frame) {
+    fn draw(&mut self) {
         for column in 0..self.width as isize {
             for row in 0..self.height as isize {
                 let cell = self.cell(column, row).unwrap();
@@ -194,7 +193,7 @@ impl Draw for Conway {
 }
 
 impl Update for Conway {
-    fn update(&mut self, _frame: &Frame) {
+    fn update(&mut self) {
         let update_start = Instant::now();
         if update_start - self.last_update > UPDATE_INTERVAL {
             self.apply_rule(&self.rule.clone());

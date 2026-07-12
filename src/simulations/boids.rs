@@ -1,5 +1,4 @@
 use crate::buffer::DoubleBuffer;
-use crate::component::Frame;
 use crate::grid::Grid;
 use crate::traits::*;
 
@@ -246,7 +245,7 @@ impl Boids {
 }
 
 impl Draw for Boids {
-    fn draw(&self, _frame: &mut Frame) {
+    fn draw(&mut self) {
         clear_background(BLANK);
         for boid in self.boids.state() {
             boid.draw();
@@ -255,7 +254,7 @@ impl Draw for Boids {
 }
 
 impl Update for Boids {
-    fn update(&mut self, _frame: &Frame) {
+    fn update(&mut self) {
         let update_start = Instant::now();
         let deltatime = update_start - self.last_update;
 
