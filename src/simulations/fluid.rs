@@ -129,14 +129,19 @@ impl FluidSim {
         fluid_render_target.texture.set_filter(FilterMode::Nearest);
 
         let mut obstacles: Vec<Box<dyn Obstacle>> = Vec::new();
-        obstacles.push(Box::new(CircleObstacle {
-            pos: vec2(sim_width / 2., sim_height / 2.),
-            radius: 40.,
-        }));
-        obstacles.push(Box::new(RectangleObstacle {
-            pos: vec2(sim_width - sim_width / 4., sim_height / 2.),
-            size: vec2(40., 80.),
-        }));
+        // obstacles.push(Box::new(CircleObstacle {
+        //     pos: vec2(sim_width / 2., sim_height / 2.),
+        //     radius: 40.,
+        // }));
+        // obstacles.push(Box::new(RectangleObstacle {
+        //     pos: vec2(sim_width - sim_width / 4., sim_height / 2.),
+        //     size: vec2(40., 80.),
+        // }));
+
+        let bitmap = BinaryBitmap::example_bitmap(200, 150);
+        let bitmap_obstacle =
+            BitmapObstacle::from_bitmap(bitmap, vec2(0., 0.), vec2(sim_width, sim_height));
+        obstacles.push(Box::new(bitmap_obstacle));
 
         Self {
             sim_width,
@@ -628,6 +633,279 @@ impl Draw for RectangleObstacle {
             self.size.y,
             4.,
             OBSTACLE_COLOR,
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BinaryBitmap {
+    grid: Grid<bool>,
+}
+
+impl BinaryBitmap {
+    pub fn new(grid: Grid<bool>) -> Self {
+        Self { grid }
+    }
+
+    #[allow(unused)]
+    pub fn example_bitmap(width: usize, height: usize) -> Self {
+        let mut grid = Grid::from_generator(width, height, |_, _| false);
+
+        // Rectangle
+        for y in 20..60 {
+            for x in 20..80 {
+                *grid.get_mut(x as isize, y as isize).unwrap() = true;
+            }
+        }
+
+        // Circle
+        let centre = vec2(120., 80.);
+        let radius = 25.;
+
+        for y in 0..height {
+            for x in 0..width {
+                let pos = vec2(x as f32, y as f32);
+
+                if pos.distance(centre) < radius {
+                    *grid.get_mut(x as isize, y as isize).unwrap() = true;
+                }
+            }
+        }
+
+        Self { grid }
+    }
+
+    fn to_texture(&self) -> Texture2D {
+        let width = self.grid.columns();
+        let height = self.grid.rows();
+
+        let mut bytes = Vec::with_capacity(width * height * 4);
+
+        for y in 0..height {
+            for x in 0..width {
+                let occupied = *self.grid.get(x as isize, y as isize).unwrap();
+
+                if occupied {
+                    bytes.extend_from_slice(&[255, 255, 255, 255]);
+                } else {
+                    bytes.extend_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+
+        let image = Image {
+            bytes,
+            width: width as u16,
+            height: height as u16,
+        };
+
+        let texture = Texture2D::from_image(&image);
+        texture.set_filter(FilterMode::Nearest);
+
+        texture
+    }
+}
+
+impl From<BinaryBitmap> for Texture2D {
+    fn from(bitmap: BinaryBitmap) -> Self {
+        bitmap.to_texture()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DistanceField {
+    grid: Grid<f32>,
+}
+
+impl DistanceField {
+    pub fn sample(&self, pos: Vec2) -> f32 {
+        *self
+            .grid
+            .get(pos.x.floor() as isize, pos.y.floor() as isize)
+            .unwrap_or(&0.)
+    }
+
+    pub fn gradient(&self, pos: Vec2) -> Vec2 {
+        let dx = self.sample(pos + vec2(1., 0.)) - self.sample(pos - vec2(1., 0.));
+        let dy = self.sample(pos + vec2(0., 1.)) - self.sample(pos - vec2(0., 1.));
+        vec2(dx, dy).normalize_or_zero()
+    }
+
+    fn calculate_distance_field(bitmap: &Grid<bool>, target: bool) -> Grid<f32> {
+        let mut distances =
+            Grid::from_generator(bitmap.columns(), bitmap.rows(), |_, _| f32::INFINITY);
+
+        // Pixels matching target are distance 0
+        for y in 0..bitmap.rows() as isize {
+            for x in 0..bitmap.columns() as isize {
+                if *bitmap.get(x, y).unwrap() == target {
+                    *distances.get_mut(x, y).unwrap() = 0.0;
+                }
+            }
+        }
+
+        // Relax neighbours
+        for _ in 0..100 {
+            for y in 1..bitmap.rows() as isize - 1 {
+                for x in 1..bitmap.columns() as isize - 1 {
+                    let i = bitmap.index(x, y).unwrap();
+
+                    let best = distances
+                        .get_by_index(i)
+                        .unwrap()
+                        .min(distances.get_by_index(i - 1).unwrap() + 1.0)
+                        .min(distances.get_by_index(i + 1).unwrap() + 1.0)
+                        .min(distances.get_by_index(i - bitmap.columns()).unwrap() + 1.0)
+                        .min(distances.get_by_index(i + bitmap.columns()).unwrap() + 1.0);
+
+                    *distances.get_mut_by_index(i).unwrap() = best;
+                }
+            }
+
+            // Reverse pass (important for convergence)
+            for y in (1..bitmap.rows() as isize - 1).rev() {
+                for x in (1..bitmap.columns() as isize - 1).rev() {
+                    let i = bitmap.index(x, y).unwrap();
+
+                    let best = distances
+                        .get_by_index(i)
+                        .unwrap()
+                        .min(distances.get_by_index(i - 1).unwrap() + 1.0)
+                        .min(distances.get_by_index(i + 1).unwrap() + 1.0)
+                        .min(distances.get_by_index(i - bitmap.columns()).unwrap() + 1.0)
+                        .min(distances.get_by_index(i + bitmap.columns()).unwrap() + 1.0);
+
+                    *distances.get_mut_by_index(i).unwrap() = best;
+                }
+            }
+        }
+
+        distances
+    }
+}
+
+impl From<&BinaryBitmap> for DistanceField {
+    fn from(bitmap: &BinaryBitmap) -> Self {
+        let obstacle_distances = Self::calculate_distance_field(&bitmap.grid, true);
+        let empty_distances = Self::calculate_distance_field(&bitmap.grid, false);
+
+        let distances = Grid::from_generator(bitmap.grid.columns(), bitmap.grid.rows(), |x, y| {
+            if *bitmap.grid.get(x as isize, y as isize).unwrap() {
+                // Inside obstacle: negative distance to escape
+                -empty_distances.get(x as isize, y as isize).unwrap()
+            } else {
+                // Outside obstacle: positive distance to obstacle
+                *obstacle_distances.get(x as isize, y as isize).unwrap()
+            }
+        });
+
+        Self { grid: distances }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BitmapObstacle {
+    pos: Vec2,
+    size: Vec2,
+    bitmap: BinaryBitmap,
+    distance_field: DistanceField,
+}
+
+impl BitmapObstacle {
+    fn from_bitmap(bitmap: BinaryBitmap, pos: Vec2, size: Vec2) -> Self {
+        let distance_field = DistanceField::from(&bitmap);
+        Self {
+            pos,
+            size,
+            bitmap,
+            distance_field,
+        }
+    }
+
+    fn relative_pos(&self, pos: Vec2) -> Vec2 {
+        let pixel_width = self.size.x / self.bitmap.grid.columns() as f32;
+        let pixel_height = self.size.y / self.bitmap.grid.rows() as f32;
+
+        let mut relative_pos = pos;
+        relative_pos.x /= pixel_width;
+        relative_pos.y /= pixel_height;
+
+        relative_pos
+    }
+
+    fn escape_displacement_sdf(&self, pos: Vec2) -> Option<Vec2> {
+        let pixel_width = self.size.x / self.bitmap.grid.columns() as f32;
+        let pixel_height = self.size.y / self.bitmap.grid.rows() as f32;
+        let relative_pos = self.relative_pos(pos);
+
+        let distance = self.distance_field.sample(relative_pos);
+        if distance >= 0. {
+            return None;
+        }
+
+        let mut gradient = self.distance_field.gradient(relative_pos);
+        gradient.x *= pixel_width;
+        gradient.y *= pixel_height;
+
+        Some(gradient * -distance)
+    }
+
+    fn escape_displacement_cheap(&self, pos: Vec2) -> Option<Vec2> {
+        let relative_pos = self.relative_pos(pos);
+
+        let x = relative_pos.x as isize;
+        let y = relative_pos.y as isize;
+
+        let mut displacement = Vec2::ZERO;
+
+        if self.bitmap.grid.get(x, y).is_some_and(|exists| *exists) {
+            for dy in -5..=5 {
+                for dx in -5..=5 {
+                    let sample_x = x + dx;
+                    let sample_y = y + dy;
+
+                    if self
+                        .bitmap
+                        .grid
+                        .get(sample_x, sample_y)
+                        .is_some_and(|exists| *exists)
+                    {
+                        let away = relative_pos - vec2(sample_x as f32, sample_y as f32);
+
+                        if away.length_squared() > 0.0 {
+                            displacement += away.normalize() / away.length();
+                        }
+                    }
+                }
+            }
+        }
+
+        if displacement.length_squared() > 0.0 {
+            Some(displacement.normalize())
+        } else {
+            None
+        }
+    }
+}
+
+impl Obstacle for BitmapObstacle {
+    fn escape_displacement(&self, pos: Vec2) -> Option<Vec2> {
+        self.escape_displacement_cheap(pos)
+    }
+}
+
+impl Draw for BitmapObstacle {
+    fn draw(&mut self) {
+        draw_texture_ex(
+            &self.bitmap.to_texture(),
+            self.pos.x,
+            self.pos.y,
+            WHITE,
+            DrawTextureParams {
+                flip_y: false,
+                dest_size: Some(self.size),
+                ..Default::default()
+            },
         );
     }
 }
