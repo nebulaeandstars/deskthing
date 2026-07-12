@@ -6,6 +6,7 @@ use crate::traits::*;
 use macroquad::prelude::*;
 use macroquad::rand::RandomRange;
 use rayon::prelude::*;
+use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
 const ITERATIONS_PER_UPDATE: usize = 3;
@@ -26,6 +27,7 @@ const GRAVITY: f32 = 0.;
 const RESTITUTION_COEFFICIENT: f32 = 0.3;
 
 const PARTICLE_DRAW_SIZE: f32 = 5.;
+const OBSTACLE_COLOR: Color = Color::new(0.6, 0.6, 0.6, 1.);
 
 #[derive(Clone, Debug)]
 pub struct FluidParticle {
@@ -99,10 +101,11 @@ impl FluidParticle {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct FluidSim {
     sim_width: f32,
     sim_height: f32,
+    obstacles: Vec<Box<dyn Obstacle>>,
     particles: Vec<FluidParticle>,
     densities: Vec<f32>,
     lambdas: Vec<f32>,
@@ -125,9 +128,20 @@ impl FluidSim {
         let fluid_render_target = render_target(sim_width as u32, sim_height as u32);
         fluid_render_target.texture.set_filter(FilterMode::Nearest);
 
+        let mut obstacles: Vec<Box<dyn Obstacle>> = Vec::new();
+        obstacles.push(Box::new(CircleObstacle {
+            pos: vec2(sim_width / 2., sim_height / 2.),
+            radius: 40.,
+        }));
+        obstacles.push(Box::new(RectangleObstacle {
+            pos: vec2(sim_width - sim_width / 4., sim_height / 2.),
+            size: vec2(40., 80.),
+        }));
+
         Self {
             sim_width,
             sim_height,
+            obstacles,
             particles,
             densities: vec![0.; num_particles],
             lambdas: vec![0.; num_particles],
@@ -279,6 +293,23 @@ impl FluidSim {
             .for_each(|(i, particle)| {
                 particle.predicted_pos += position_deltas[i] * DELTA_DAMPENING_FACTOR;
             });
+    }
+
+    fn solve_obstacles(&mut self) {
+        for particle in &mut self.particles {
+            for obstacle in &self.obstacles {
+                let escape_displacement = obstacle.escape_displacement(particle.predicted_pos);
+                if let Some(displacement) = escape_displacement {
+                    particle.predicted_pos += displacement;
+
+                    let direction = displacement.normalize();
+                    let normal_speed = particle.vel.dot(direction);
+                    if normal_speed < 0.0 {
+                        particle.vel -= direction * (1.0 + RESTITUTION_COEFFICIENT) * normal_speed;
+                    }
+                }
+            }
+        }
     }
 
     fn calculate_viscosity_forces(&mut self) {
@@ -475,6 +506,7 @@ impl UpdateWithContext for FluidSim {
             self.update_densities();
             self.update_position_deltas();
             self.apply_position_deltas();
+            self.solve_obstacles();
         }
 
         self.particles
@@ -499,14 +531,103 @@ impl UpdateWithContext for FluidSim {
 impl DrawWithContext for FluidSim {
     fn draw_with_context(&mut self, frame: &mut Frame) {
         let mouse_pos = frame.relative_mouse_pos();
+
+        for obstacle in &mut self.obstacles {
+            obstacle.draw();
+        }
+
         // self.draw_fluid_texture(frame.camera());
-        self.draw_particles(mouse_pos);
         // self.draw_data_particles();
+        self.draw_particles(mouse_pos);
     }
 }
 
 impl HasSize for FluidSim {
     fn size(&self) -> Vec2 {
         vec2(self.sim_width, self.sim_height)
+    }
+}
+
+trait Obstacle: Draw + Debug + 'static {
+    /// Returns the minimum translation vector needed to move a particle
+    /// centred at `pos` out of the obstacle. Returns `None` if no collision.
+    fn escape_displacement(&self, pos: Vec2) -> Option<Vec2>;
+}
+
+#[derive(Clone, Debug)]
+struct CircleObstacle {
+    pos: Vec2,
+    radius: f32,
+}
+
+impl Obstacle for CircleObstacle {
+    fn escape_displacement(&self, pos: Vec2) -> Option<Vec2> {
+        let displacement = pos - self.pos;
+        let distance = displacement.length();
+
+        if distance <= self.radius {
+            let direction = displacement.normalize_or(Vec2::X);
+            let distance_from_edge = self.radius - distance;
+            Some(direction * distance_from_edge)
+        } else {
+            return None;
+        }
+    }
+}
+
+impl Draw for CircleObstacle {
+    fn draw(&mut self) {
+        draw_circle_lines(self.pos.x, self.pos.y, self.radius, 4., OBSTACLE_COLOR);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RectangleObstacle {
+    pos: Vec2,
+    size: Vec2,
+}
+
+impl Obstacle for RectangleObstacle {
+    fn escape_displacement(&self, pos: Vec2) -> Option<Vec2> {
+        if pos.x < self.pos.x
+            || pos.x > self.pos.x + self.size.x
+            || pos.y < self.pos.y
+            || pos.y > self.pos.y + self.size.y
+        {
+            return None;
+        }
+
+        let dist_from_left = pos.x - self.pos.x;
+        let dist_from_right = self.pos.x + self.size.x - pos.x;
+        let dist_from_top = pos.y - self.pos.y;
+        let dist_from_bottom = self.pos.y + self.size.y - pos.y;
+
+        let min_distance = dist_from_left
+            .min(dist_from_right)
+            .min(dist_from_top)
+            .min(dist_from_bottom);
+
+        if min_distance == dist_from_left {
+            Some(Vec2::new(-dist_from_left, 0.0))
+        } else if min_distance == dist_from_right {
+            Some(Vec2::new(dist_from_right, 0.0))
+        } else if min_distance == dist_from_top {
+            Some(Vec2::new(0.0, -dist_from_top))
+        } else {
+            Some(Vec2::new(0.0, dist_from_bottom))
+        }
+    }
+}
+
+impl Draw for RectangleObstacle {
+    fn draw(&mut self) {
+        draw_rectangle_lines(
+            self.pos.x,
+            self.pos.y,
+            self.size.x,
+            self.size.y,
+            4.,
+            OBSTACLE_COLOR,
+        );
     }
 }
