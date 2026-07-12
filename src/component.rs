@@ -71,6 +71,21 @@ impl ComponentFrame {
         );
     }
 
+    pub fn refit_to_component(&mut self) {
+        let current_aspect_ratio = self.width() / self.height();
+        let new_aspect_ratio = self.component.width() / self.component.height();
+
+        let mut new_size = self.size();
+        if new_aspect_ratio >= current_aspect_ratio {
+            new_size.y = self.width() / new_aspect_ratio;
+        } else {
+            new_size.x = self.height() * new_aspect_ratio;
+        }
+
+        self.frame.pos += (self.size() - new_size) / 2.;
+        self.frame.size = new_size;
+    }
+
     pub fn refit_to_screen(&mut self, relative_frame_pos: Vec2, relative_frame_size: Vec2) {
         self.frame.refit_to(
             vec2(0., 0.),

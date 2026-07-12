@@ -71,6 +71,7 @@ async fn main() {
 
         clear_background(BG_COLOR);
         sim.refit_to_screen(vec2(0.2, 0.2), vec2(0.6, 0.6));
+        sim.refit_to_component();
         sim.update();
         sim.draw();
         sim.draw_outline(4., WHITE);
