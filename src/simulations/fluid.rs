@@ -638,12 +638,32 @@ impl Draw for RectangleObstacle {
 }
 
 #[derive(Clone, Debug)]
-struct BinaryBitmap {
+pub struct BinaryBitmap {
     grid: Grid<bool>,
 }
 
 impl BinaryBitmap {
     pub fn new(grid: Grid<bool>) -> Self {
+        Self { grid }
+    }
+
+    pub fn from_image(image: &Image) -> Self {
+        let width = image.width as usize;
+        let height = image.height as usize;
+
+        let grid = Grid::from_generator(width, height, |x, y| {
+            let i = (y * width + x) * 4;
+
+            let r = image.bytes[i];
+            let g = image.bytes[i + 1];
+            let b = image.bytes[i + 2];
+
+            let brightness = (r as f32 + g as f32 + b as f32) / (3.0 * 255.0);
+
+            // true = obstacle
+            brightness < 0.5
+        });
+
         Self { grid }
     }
 
@@ -713,7 +733,7 @@ impl From<BinaryBitmap> for Texture2D {
 }
 
 #[derive(Clone, Debug)]
-struct DistanceField {
+pub struct DistanceField {
     grid: Grid<f32>,
 }
 
@@ -808,17 +828,17 @@ pub struct BitmapObstacle {
     pos: Vec2,
     size: Vec2,
     bitmap: BinaryBitmap,
-    distance_field: DistanceField,
+    // distance_field: Option<DistanceField>,
 }
 
 impl BitmapObstacle {
-    fn from_bitmap(bitmap: BinaryBitmap, pos: Vec2, size: Vec2) -> Self {
-        let distance_field = DistanceField::from(&bitmap);
+    pub fn from_bitmap(bitmap: BinaryBitmap, pos: Vec2, size: Vec2) -> Self {
+        // let distance_field = DistanceField::from(&bitmap);
         Self {
             pos,
             size,
             bitmap,
-            distance_field,
+            // distance_field,
         }
     }
 
@@ -833,22 +853,22 @@ impl BitmapObstacle {
         relative_pos
     }
 
-    fn escape_displacement_sdf(&self, pos: Vec2) -> Option<Vec2> {
-        let pixel_width = self.size.x / self.bitmap.grid.columns() as f32;
-        let pixel_height = self.size.y / self.bitmap.grid.rows() as f32;
-        let relative_pos = self.relative_pos(pos);
+    // fn escape_displacement_sdf(&self, pos: Vec2) -> Option<Vec2> {
+    //     let pixel_width = self.size.x / self.bitmap.grid.columns() as f32;
+    //     let pixel_height = self.size.y / self.bitmap.grid.rows() as f32;
+    //     let relative_pos = self.relative_pos(pos);
 
-        let distance = self.distance_field.sample(relative_pos);
-        if distance >= 0. {
-            return None;
-        }
+    //     let distance = self.distance_field.sample(relative_pos);
+    //     if distance >= 0. {
+    //         return None;
+    //     }
 
-        let mut gradient = self.distance_field.gradient(relative_pos);
-        gradient.x *= pixel_width;
-        gradient.y *= pixel_height;
+    //     let mut gradient = self.distance_field.gradient(relative_pos);
+    //     gradient.x *= pixel_width;
+    //     gradient.y *= pixel_height;
 
-        Some(gradient * -distance)
-    }
+    //     Some(gradient * -distance)
+    // }
 
     fn escape_displacement_cheap(&self, pos: Vec2) -> Option<Vec2> {
         let relative_pos = self.relative_pos(pos);

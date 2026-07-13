@@ -26,6 +26,7 @@ use simulations::*;
 use traits::*;
 
 use macroquad::prelude::*;
+use std::time::{Duration, Instant};
 
 pub const BG_COLOR: Color = Color::new(0.18, 0.18, 0.18, 1.0);
 pub const OUTLINE_COLOR: Color = Color::new(0.8, 0.8, 0.8, 1.0);
@@ -40,14 +41,33 @@ const NUM_BOIDS: usize = 500;
 const COLORLIFE_PARTICLES: usize = 3000;
 const FLUID_PARTICLES: usize = 1000;
 
+struct Video {
+    pub frames: Vec<Image>,
+    pub framerate: u32,
+}
+
 #[macroquad::main("window_config")]
 async fn main() {
     let mut sim = default_sim();
 
+    let bad_apple = load_bad_apple().await;
+    let start = Instant::now();
     loop {
+        clear_background(BG_COLOR);
+
+        let now = Instant::now();
+        let time_since_start = now - start;
+        let frame = (time_since_start.as_secs_f32() * 30.).round() as usize; // 30 fps
+
+        // TODO: Remove
+        let image = &bad_apple.frames[frame];
+        let bitmap = BinaryBitmap::from_image(&image);
+        let mut obstacle = BitmapObstacle::from_bitmap(bitmap, vec2(0., 0.), vec2(300., 200.));
+        obstacle.draw();
+
         handle_sim_selection(&mut sim);
-        update(&mut sim);
-        draw(&mut sim);
+        // update(&mut sim);
+        // draw(&mut sim);
         next_frame().await;
     }
 }
@@ -58,6 +78,29 @@ fn window_config() -> Conf {
         window_title: "Deskthing".to_owned(),
         sample_count: 4,
         ..Default::default()
+    }
+}
+
+async fn load_bad_apple() -> Video {
+    let mut files = std::fs::read_dir("./resources/badapple/frames/")
+        .unwrap()
+        .collect::<Vec<_>>();
+
+    files.sort_by_key(|file| file.as_ref().unwrap().file_name());
+    let mut frames = Vec::with_capacity(files.len());
+
+    for file in files {
+        let file = file.unwrap();
+        let path = file.path();
+
+        let image = load_image(path.to_str().unwrap()).await.unwrap();
+
+        frames.push(image);
+    }
+
+    Video {
+        frames,
+        framerate: 30,
     }
 }
 
