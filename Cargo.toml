@@ -13,4 +13,5 @@ strip = true
 
 [dependencies]
 macroquad = "0.4.15"
-rayon = "1.12.0"
+rayon = "1.12"
+# serde = "1.0"

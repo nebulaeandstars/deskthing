@@ -9,14 +9,14 @@ use rayon::prelude::*;
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
-const ITERATIONS_PER_UPDATE: usize = 3;
+const ITERATIONS_PER_UPDATE: usize = 4;
 
 const MIN_SPEED: f32 = 0.0;
 const MAX_SPEED: f32 = 200.0;
 
-const SMOOTHING_RADIUS: f32 = 50.;
-const REST_DENSITY: f32 = 20.;
-const VISCOSITY: f32 = 0.01;
+const SMOOTHING_RADIUS: f32 = 30.;
+const REST_DENSITY: f32 = 2.;
+const VISCOSITY: f32 = 0.1;
 
 const DELTA_DAMPENING_FACTOR: f32 = 0.8;
 const VELOCITY_DAMPENING_FACTOR: f32 = 0.98;
@@ -27,7 +27,12 @@ const GRAVITY: f32 = 0.;
 const RESTITUTION_COEFFICIENT: f32 = 0.3;
 
 const PARTICLE_DRAW_SIZE: f32 = 5.;
-const OBSTACLE_COLOR: Color = Color::new(0.6, 0.6, 0.6, 1.);
+// const OBSTACLE_COLOR: Color = Color::new(0.6, 0.6, 0.6, 1.);
+const OBSTACLE_COLOR: Color = BLANK;
+const OBSTACLE_BORDER: f32 = SMOOTHING_RADIUS;
+
+// Large "infine" number to avoid NaNs
+const INF: f32 = 1e20;
 
 #[derive(Clone, Debug)]
 pub struct FluidParticle {
@@ -105,7 +110,7 @@ impl FluidParticle {
 pub struct FluidSim {
     sim_width: f32,
     sim_height: f32,
-    obstacles: Vec<Box<dyn Obstacle>>,
+    video: Vec<DistanceField>,
     particles: Vec<FluidParticle>,
     densities: Vec<f32>,
     lambdas: Vec<f32>,
@@ -113,13 +118,19 @@ pub struct FluidSim {
     viscosity_forces: Vec<Vec2>,
     chunks: Grid<Vec<usize>>,
     last_update: Instant,
+    sim_start: Instant,
     draw_material: Material,
     fluid_render_target: RenderTarget,
 }
 
 impl FluidSim {
     #[allow(unused)]
-    pub fn new(particles: Vec<FluidParticle>, sim_width: f32, sim_height: f32) -> Self {
+    pub fn new(
+        particles: Vec<FluidParticle>,
+        sim_width: f32,
+        sim_height: f32,
+        video: Vec<DistanceField>,
+    ) -> Self {
         let ideal_chunk_size = SMOOTHING_RADIUS;
         let columns = (sim_width / ideal_chunk_size).floor() as usize;
         let rows = (sim_height / ideal_chunk_size).floor() as usize;
@@ -128,25 +139,10 @@ impl FluidSim {
         let fluid_render_target = render_target(sim_width as u32, sim_height as u32);
         fluid_render_target.texture.set_filter(FilterMode::Nearest);
 
-        let mut obstacles: Vec<Box<dyn Obstacle>> = Vec::new();
-        // obstacles.push(Box::new(CircleObstacle {
-        //     pos: vec2(sim_width / 2., sim_height / 2.),
-        //     radius: 40.,
-        // }));
-        // obstacles.push(Box::new(RectangleObstacle {
-        //     pos: vec2(sim_width - sim_width / 4., sim_height / 2.),
-        //     size: vec2(40., 80.),
-        // }));
-
-        let bitmap = BinaryBitmap::example_bitmap(200, 150);
-        let bitmap_obstacle =
-            BitmapObstacle::from_bitmap(bitmap, vec2(0., 0.), vec2(sim_width, sim_height));
-        obstacles.push(Box::new(bitmap_obstacle));
-
         Self {
             sim_width,
             sim_height,
-            obstacles,
+            video,
             particles,
             densities: vec![0.; num_particles],
             lambdas: vec![0.; num_particles],
@@ -154,13 +150,19 @@ impl FluidSim {
             viscosity_forces: vec![Vec2::ZERO; num_particles],
             chunks: Grid::with_defaults(columns, rows),
             last_update: Instant::now(),
+            sim_start: Instant::now(),
             draw_material: liquid_material(),
             fluid_render_target,
         }
     }
 
     #[allow(unused)]
-    pub fn init(num_particles: usize, sim_width: f32, sim_height: f32) -> Self {
+    pub fn init(
+        num_particles: usize,
+        sim_width: f32,
+        sim_height: f32,
+        video: Vec<DistanceField>,
+    ) -> Self {
         let mut particles = Vec::new();
 
         for i in 0..num_particles {
@@ -169,7 +171,7 @@ impl FluidSim {
             particles.push(FluidParticle::new(i, x, y));
         }
 
-        Self::new(particles, sim_width, sim_height)
+        Self::new(particles, sim_width, sim_height, video)
     }
 
     fn update_chunks(&mut self) {
@@ -203,6 +205,23 @@ impl FluidSim {
             particle.apply_gravity(deltatime);
             particle.reset_predicted_pos(deltatime);
         });
+    }
+
+    fn video_frame(&self) -> &DistanceField {
+        let now = Instant::now();
+        let time_since_start = now - self.sim_start;
+        let frame = (time_since_start.as_secs_f32() * 30.).round() as usize; // 30 fps
+        let looped_frame = frame % self.video.len();
+        &self.video[looped_frame]
+    }
+
+    fn video_obstacle(&mut self) -> BitmapObstacle {
+        let bitmap = self.video_frame();
+        BitmapObstacle::from_distance_field(
+            bitmap.clone(),
+            vec2(OBSTACLE_BORDER, OBSTACLE_BORDER),
+            vec2(self.sim_width - OBSTACLE_BORDER * 2., self.sim_height - OBSTACLE_BORDER * 2.),
+        )
     }
 
     fn update_densities(&mut self) {
@@ -300,18 +319,35 @@ impl FluidSim {
             });
     }
 
-    fn solve_obstacles(&mut self) {
-        for particle in &mut self.particles {
-            for obstacle in &self.obstacles {
-                let escape_displacement = obstacle.escape_displacement(particle.predicted_pos);
-                if let Some(displacement) = escape_displacement {
-                    particle.predicted_pos += displacement;
+    // fn solve_obstacles(&mut self) {
+    //     for particle in &mut self.particles {
+    //         for obstacle in &self.obstacles {
+    //             let escape_displacement = obstacle.escape_displacement(particle.predicted_pos);
+    //             if let Some(displacement) = escape_displacement {
+    //                 particle.predicted_pos += displacement;
 
-                    let direction = displacement.normalize();
-                    let normal_speed = particle.vel.dot(direction);
-                    if normal_speed < 0.0 {
-                        particle.vel -= direction * (1.0 + RESTITUTION_COEFFICIENT) * normal_speed;
-                    }
+    //                 let direction = displacement.normalize();
+    //                 let normal_speed = particle.vel.dot(direction);
+    //                 if normal_speed < 0.0 {
+    //                     particle.vel -= direction * (1.0 + RESTITUTION_COEFFICIENT) * normal_speed;
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
+    fn solve_video_frame_obstacle(&mut self) {
+        let obstacle = self.video_obstacle();
+
+        for particle in &mut self.particles {
+            let escape_displacement = obstacle.escape_displacement(particle.predicted_pos);
+            if let Some(displacement) = escape_displacement && displacement.is_finite() {
+                particle.predicted_pos += displacement;
+
+                let direction = displacement.normalize();
+                let normal_speed = particle.vel.dot(direction);
+                if normal_speed < 0.0 {
+                    particle.vel -= direction * (1.0 + RESTITUTION_COEFFICIENT) * normal_speed;
                 }
             }
         }
@@ -511,7 +547,7 @@ impl UpdateWithContext for FluidSim {
             self.update_densities();
             self.update_position_deltas();
             self.apply_position_deltas();
-            self.solve_obstacles();
+            self.solve_video_frame_obstacle();
         }
 
         self.particles
@@ -535,11 +571,12 @@ impl UpdateWithContext for FluidSim {
 
 impl DrawWithContext for FluidSim {
     fn draw_with_context(&mut self, frame: &mut Frame) {
+        frame.camera().zoom = vec2(2.0 / (self.sim_width - OBSTACLE_BORDER * 2.), -2.0 / (self.sim_height - OBSTACLE_BORDER * 2.));
+
         let mouse_pos = frame.relative_mouse_pos();
 
-        for obstacle in &mut self.obstacles {
-            obstacle.draw();
-        }
+        self.video_frame()
+            .draw_bitmap(vec2(OBSTACLE_BORDER, OBSTACLE_BORDER), vec2(self.sim_width - OBSTACLE_BORDER * 2., self.sim_height - OBSTACLE_BORDER * 2.));
 
         // self.draw_fluid_texture(frame.camera());
         // self.draw_data_particles();
@@ -553,7 +590,7 @@ impl HasSize for FluidSim {
     }
 }
 
-trait Obstacle: Draw + Debug + 'static {
+pub trait Obstacle: Draw + Debug + 'static {
     /// Returns the minimum translation vector needed to move a particle
     /// centred at `pos` out of the obstacle. Returns `None` if no collision.
     fn escape_displacement(&self, pos: Vec2) -> Option<Vec2>;
@@ -639,7 +676,7 @@ impl Draw for RectangleObstacle {
 
 #[derive(Clone, Debug)]
 pub struct BinaryBitmap {
-    grid: Grid<bool>,
+    pub grid: Grid<bool>,
 }
 
 impl BinaryBitmap {
@@ -724,6 +761,20 @@ impl BinaryBitmap {
 
         texture
     }
+
+    fn draw_bitmap(&self, pos: Vec2, size: Vec2) {
+        draw_texture_ex(
+            &self.to_texture(),
+            pos.x,
+            pos.y,
+            OBSTACLE_COLOR,
+            DrawTextureParams {
+                flip_y: false,
+                dest_size: Some(size),
+                ..Default::default()
+            },
+        );
+    }
 }
 
 impl From<BinaryBitmap> for Texture2D {
@@ -734,10 +785,14 @@ impl From<BinaryBitmap> for Texture2D {
 
 #[derive(Clone, Debug)]
 pub struct DistanceField {
-    grid: Grid<f32>,
+    pub grid: Grid<f32>,
 }
 
 impl DistanceField {
+    pub fn new(grid: Grid<f32>) -> Self {
+        Self { grid }
+    }
+
     pub fn sample(&self, pos: Vec2) -> f32 {
         *self
             .grid
@@ -802,10 +857,8 @@ impl DistanceField {
 
         distances
     }
-}
 
-impl From<&BinaryBitmap> for DistanceField {
-    fn from(bitmap: &BinaryBitmap) -> Self {
+    fn iterative_from_bitmap(bitmap: &BinaryBitmap) -> Self {
         let obstacle_distances = Self::calculate_distance_field(&bitmap.grid, true);
         let empty_distances = Self::calculate_distance_field(&bitmap.grid, false);
 
@@ -821,56 +874,264 @@ impl From<&BinaryBitmap> for DistanceField {
 
         Self { grid: distances }
     }
+
+    fn edt_from_bitmap(bitmap: &BinaryBitmap) -> Self {
+        let outside = Self::unsigned_edt_from_bitmap(&bitmap, true);
+        let inside  = Self::unsigned_edt_from_bitmap(&bitmap, false);
+
+        let mut sdf = Grid::from_generator(
+            bitmap.grid.columns(),
+            bitmap.grid.rows(),
+            |x, y| {
+                let inside_obstacle = *bitmap.grid.get(x as isize, y as isize).unwrap();
+
+                if inside_obstacle {
+                    -*inside.get(x as isize, y as isize).unwrap()
+                } else {
+                    *outside.get(x as isize, y as isize).unwrap()
+                }
+            },
+        );
+
+        Self { grid: sdf }
+    }
+
+    fn unsigned_edt_from_bitmap(bitmap: &BinaryBitmap, target: bool) -> Grid<f32> {
+        let width = bitmap.grid.columns();
+        let height = bitmap.grid.rows();
+
+        let mut grid = Grid::from_generator(width, height, |x, y| {
+            if *bitmap.grid.get(x as isize, y as isize).unwrap() == target {
+                0.0
+            } else {
+                INF
+            }
+        });
+
+        for x in 0..width {
+            let mut column = vec![0.0; height];
+
+            for y in 0..height {
+                column[y] = *grid.get(x as isize, y as isize).unwrap();
+            }
+
+            let column = Self::edt_1d(&column);
+
+            for y in 0..height {
+                *grid.get_mut(x as isize, y as isize).unwrap() = column[y];
+            }
+        }
+
+        for y in 0..height {
+            let mut row = vec![0.0; width];
+
+            for x in 0..width {
+                row[x] = *grid.get(x as isize, y as isize).unwrap();
+            }
+
+            let row = Self::edt_1d(&row);
+
+            for x in 0..width {
+                *grid.get_mut(x as isize, y as isize).unwrap() = row[x].sqrt();
+            }
+        }
+
+        grid
+    }
+
+    fn edt_1d(f: &[f32]) -> Vec<f32> {
+        let n = f.len();
+
+        let mut d = vec![0.0; n];
+
+        // Locations of parabolas in the lower envelope
+        let mut v = vec![0usize; n];
+
+        // Locations where one parabola overtakes the previous one
+        let mut z = vec![0.0; n + 1];
+
+        let mut k = 0;
+
+        v[0] = 0;
+        z[0] = -INF;
+        z[1] = INF;
+
+        // Construct lower envelope
+        for q in 1..n {
+            if f[q] >= INF {
+                continue;
+            }
+
+            let mut s = ((f[q] + (q * q) as f32)
+                - (f[v[k]] + (v[k] * v[k]) as f32))
+                / (2.0 * (q as f32 - v[k] as f32));
+
+            while k > 0 && s <= z[k] {
+                k -= 1;
+
+                s = ((f[q] + (q * q) as f32)
+                    - (f[v[k]] + (v[k] * v[k]) as f32))
+                    / (2.0 * (q as f32 - v[k] as f32));
+            }
+
+            k += 1;
+            v[k] = q;
+            z[k] = s;
+            z[k + 1] = INF;
+        }
+
+        // Evaluate lower envelope
+        k = 0;
+
+        for q in 0..n {
+            while z[k + 1] < q as f32 {
+                k += 1;
+            }
+
+            let dx = q as f32 - v[k] as f32;
+            d[q] = dx * dx + f[v[k]];
+        }
+
+        d
+    }
+
+    fn to_texture(&self) -> Texture2D {
+        let width = self.grid.columns();
+        let height = self.grid.rows();
+
+        let mut bytes = Vec::with_capacity(width * height * 4);
+
+        for y in 0..height {
+            for x in 0..width {
+                let value = *self.grid.get(x as isize, y as isize).unwrap();
+                let occupied = value < 0.;
+                let on_border = value < 0. && value > -5.;
+
+                if on_border {
+                    bytes.extend_from_slice(&[255, 0, 0, 255]);
+                } else if occupied {
+                    bytes.extend_from_slice(&[255, 255, 255, 255]);
+                } else {
+                    bytes.extend_from_slice(&[0, 0, 0, 0]);
+                }
+            }
+        }
+
+        let image = Image {
+            bytes,
+            width: width as u16,
+            height: height as u16,
+        };
+
+        let texture = Texture2D::from_image(&image);
+        texture.set_filter(FilterMode::Nearest);
+
+        texture
+    }
+
+    fn draw_bitmap(&self, pos: Vec2, size: Vec2) {
+        draw_texture_ex(
+            &self.to_texture(),
+            pos.x,
+            pos.y,
+            OBSTACLE_COLOR,
+            DrawTextureParams {
+                flip_y: false,
+                dest_size: Some(size),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+impl From<&BinaryBitmap> for DistanceField {
+    fn from(bitmap: &BinaryBitmap) -> Self {
+        Self::edt_from_bitmap(bitmap)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct BitmapObstacle {
     pos: Vec2,
     size: Vec2,
-    bitmap: BinaryBitmap,
-    // distance_field: Option<DistanceField>,
+    bitmap: Option<BinaryBitmap>,
+    distance_field: Option<DistanceField>,
 }
 
 impl BitmapObstacle {
     pub fn from_bitmap(bitmap: BinaryBitmap, pos: Vec2, size: Vec2) -> Self {
-        // let distance_field = DistanceField::from(&bitmap);
         Self {
             pos,
             size,
-            bitmap,
-            // distance_field,
+            bitmap: Some(bitmap),
+            distance_field: None,
+        }
+    }
+
+    pub fn from_distance_field(distance_field: DistanceField, pos: Vec2, size: Vec2) -> Self {
+        Self {
+            pos,
+            size,
+            bitmap: None,
+            distance_field: Some(distance_field),
+        }
+    }
+
+    fn pixel_dimensions(&self) -> (f32, f32) {
+        if let Some(bitmap) = &self.bitmap {
+            let pixel_width = self.size.x / bitmap.grid.columns() as f32;
+            let pixel_height = self.size.y / bitmap.grid.rows() as f32;
+            (pixel_width, pixel_height)
+        } else if let Some(distance_field) = &self.distance_field {
+            let pixel_width = self.size.x / distance_field.grid.columns() as f32;
+            let pixel_height = self.size.y / distance_field.grid.rows() as f32;
+            (pixel_width, pixel_height)
+        } else {
+            unreachable!()
         }
     }
 
     fn relative_pos(&self, pos: Vec2) -> Vec2 {
-        let pixel_width = self.size.x / self.bitmap.grid.columns() as f32;
-        let pixel_height = self.size.y / self.bitmap.grid.rows() as f32;
+        let (pixel_width, pixel_height) = self.pixel_dimensions();
 
-        let mut relative_pos = pos;
+        let mut relative_pos = pos - self.pos;
         relative_pos.x /= pixel_width;
         relative_pos.y /= pixel_height;
 
         relative_pos
     }
 
-    // fn escape_displacement_sdf(&self, pos: Vec2) -> Option<Vec2> {
-    //     let pixel_width = self.size.x / self.bitmap.grid.columns() as f32;
-    //     let pixel_height = self.size.y / self.bitmap.grid.rows() as f32;
-    //     let relative_pos = self.relative_pos(pos);
+    fn escape_displacement(&self, pos: Vec2) -> Option<Vec2> {
+        if self.distance_field.is_some() {
+            self.escape_displacement_sdf(pos)
+        } else if self.bitmap.is_some() {
+            self.escape_displacement_cheap(pos)
+        } else {
+            unreachable!()
+        }
+    }
 
-    //     let distance = self.distance_field.sample(relative_pos);
-    //     if distance >= 0. {
-    //         return None;
-    //     }
+    fn escape_displacement_sdf(&self, pos: Vec2) -> Option<Vec2> {
+        let distance_field = self.distance_field.as_ref().unwrap();
 
-    //     let mut gradient = self.distance_field.gradient(relative_pos);
-    //     gradient.x *= pixel_width;
-    //     gradient.y *= pixel_height;
+        let (pixel_width, pixel_height) = self.pixel_dimensions();
+        let relative_pos = self.relative_pos(pos);
 
-    //     Some(gradient * -distance)
-    // }
+        let distance = distance_field.sample(relative_pos);
+        if distance >= 0. {
+            return None;
+        }
+
+        let mut gradient = distance_field.gradient(relative_pos);
+        gradient.x *= pixel_width;
+        gradient.y *= pixel_height;
+
+        Some(gradient * -distance)
+    }
 
     fn escape_displacement_cheap(&self, pos: Vec2) -> Option<Vec2> {
+        let bitmap = self.bitmap.as_ref().unwrap();
+
         let relative_pos = self.relative_pos(pos);
 
         let x = relative_pos.x as isize;
@@ -878,22 +1139,23 @@ impl BitmapObstacle {
 
         let mut displacement = Vec2::ZERO;
 
-        if self.bitmap.grid.get(x, y).is_some_and(|exists| *exists) {
+        if bitmap.grid.get(x, y).is_some_and(|exists| *exists) {
             for dy in -5..=5 {
                 for dx in -5..=5 {
                     let sample_x = x + dx;
                     let sample_y = y + dy;
 
-                    if self
-                        .bitmap
+                    if bitmap
                         .grid
                         .get(sample_x, sample_y)
                         .is_some_and(|exists| *exists)
                     {
                         let away = relative_pos - vec2(sample_x as f32, sample_y as f32);
 
-                        if away.length_squared() > 0.0 {
-                            displacement += away.normalize() / away.length();
+                        if away.is_finite() {
+                            if away.length_squared() > 0.0 {
+                                displacement += away.normalize() / away.length();
+                            }
                         }
                     }
                 }
@@ -916,16 +1178,10 @@ impl Obstacle for BitmapObstacle {
 
 impl Draw for BitmapObstacle {
     fn draw(&mut self) {
-        draw_texture_ex(
-            &self.bitmap.to_texture(),
-            self.pos.x,
-            self.pos.y,
-            WHITE,
-            DrawTextureParams {
-                flip_y: false,
-                dest_size: Some(self.size),
-                ..Default::default()
-            },
-        );
+        if let Some(bitmap) = &self.bitmap {
+            bitmap.draw_bitmap(self.pos, self.size);
+        } else if let Some(distance_field) = &self.distance_field {
+            distance_field.draw_bitmap(self.pos, self.size);
+        }
     }
 }
