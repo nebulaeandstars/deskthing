@@ -1,12 +1,13 @@
 use crate::buffer::DoubleBuffer;
 use crate::grid::Grid;
-use crate::traits::*;
 
-use macroquad::prelude::*;
-use rand::RandomRange;
+use crate::engine::{Canvas, Color, Input, Vec2, vec2};
+use crate::rng::{Rng, RngExt};
+use crate::traits::{HasSize, Simulation};
+
 use rayon::prelude::*;
 use std::f32::consts::{PI, TAU};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const BOID_COLOR: Color = crate::OUTLINE_COLOR;
 const BOID_HEIGHT: f32 = 15.0;
@@ -81,6 +82,7 @@ impl Boid {
         neighbours: impl Iterator<Item = &'a Boid>,
         sim_width: f32,
         sim_height: f32,
+        wander: Vec2,
     ) -> Self {
         let mut new_boid = self.clone();
         let mut acceleration = Vec2::new(0., 0.);
@@ -120,11 +122,9 @@ impl Boid {
             acceleration += (flock_vel - self.vel) * BOID_ALIGNMENT_FACTOR;
         }
 
-        // Wander slightly
-        let wander = Vec2::new(
-            RandomRange::gen_range(-1., 1.),
-            RandomRange::gen_range(-1., 1.),
-        );
+        // Wander slightly. The vector is supplied rather than drawn here so
+        // this stays a pure function of its inputs, and so a seeded run
+        // reproduces regardless of how rayon schedules the work.
         acceleration += wander * BOID_WANDER_FACTOR;
 
         // Reduce/expand flock distance if there are too few/many members.
@@ -161,14 +161,14 @@ impl Boid {
         new_boid
     }
 
-    pub fn draw(&self) {
+    pub fn draw(&self, canvas: &mut dyn Canvas) {
         let heading = self.heading();
 
         let v1 = self.pos + heading.rotate(Vec2::new(BOID_HEIGHT / 2.0, 0.0));
         let v2 = self.pos + heading.rotate(Vec2::new(-BOID_HEIGHT / 2.0, BOID_WIDTH / 2.0));
         let v3 = self.pos + heading.rotate(Vec2::new(-BOID_HEIGHT / 2.0, -BOID_WIDTH / 2.0));
 
-        draw_triangle(v1, v2, v3, BOID_COLOR);
+        canvas.triangle(v1, v2, v3, BOID_COLOR);
     }
 }
 
@@ -184,11 +184,11 @@ pub struct Boids {
     sim_height: f32,
     boids: DoubleBuffer<Vec<Boid>>,
     chunks: Grid<Vec<usize>>,
-    last_update: Instant,
+    rng: Rng,
 }
 
 impl Boids {
-    pub fn new(boids: Vec<Boid>, sim_width: f32, sim_height: f32) -> Self {
+    pub fn new(boids: Vec<Boid>, sim_width: f32, sim_height: f32, rng: Rng) -> Self {
         let boids = DoubleBuffer::new(boids);
 
         let ideal_chunk_size = MAX_VISION_DISTANCE;
@@ -200,21 +200,21 @@ impl Boids {
             sim_height,
             boids,
             chunks: Grid::with_defaults(columns, rows),
-            last_update: Instant::now(),
+            rng,
         }
     }
 
-    pub fn init(num_boids: usize, sim_width: f32, sim_height: f32) -> Self {
-        let mut boids = Vec::new();
+    pub fn init(num_boids: usize, sim_width: f32, sim_height: f32, mut rng: Rng) -> Self {
+        let mut boids = Vec::with_capacity(num_boids);
 
         for i in 0..num_boids {
-            let x = rand::gen_range(10., sim_width - 10.);
-            let y = rand::gen_range(10., sim_height - 10.);
-            let heading = rand::gen_range(0.0, PI * 2.0);
+            let x = rng.random_range(10.0..sim_width - 10.);
+            let y = rng.random_range(10.0..sim_height - 10.);
+            let heading = rng.random_range(0.0..PI * 2.0);
             boids.push(Boid::new(i, x, y, heading));
         }
 
-        Self::new(boids, sim_width, sim_height)
+        Self::new(boids, sim_width, sim_height, rng)
     }
 
     fn update_chunks(&mut self) {
@@ -244,19 +244,27 @@ impl Boids {
     }
 }
 
-impl Draw for Boids {
-    fn draw(&mut self) {
-        clear_background(BLANK);
+impl Simulation for Boids {
+    fn draw(&mut self, canvas: &mut dyn Canvas) {
         for boid in self.boids.state() {
-            boid.draw();
+            boid.draw(canvas);
         }
     }
-}
 
-impl Update for Boids {
-    fn update(&mut self) {
-        let update_start = Instant::now();
-        let deltatime = update_start - self.last_update;
+    fn update(&mut self, deltatime: Duration, _input: &Input) {
+        if deltatime.is_zero() {
+            return;
+        }
+
+        // Drawn up front: the generator cannot cross rayon's threads.
+        let wanders: Vec<Vec2> = (0..self.boids.state().len())
+            .map(|_| {
+                vec2(
+                    self.rng.random_range(-1.0..1.0),
+                    self.rng.random_range(-1.0..1.0),
+                )
+            })
+            .collect();
 
         let sim_width = self.sim_width;
         let sim_height = self.sim_height;
@@ -281,16 +289,134 @@ impl Update for Boids {
                 .filter(|&j| j != i)
                 .map(|j| &state[j]);
 
-            *new_boid = old_boid.update(deltatime, neighbours, sim_width, sim_height);
+            *new_boid = old_boid.update(deltatime, neighbours, sim_width, sim_height, wanders[i]);
         });
 
         self.boids.swap();
-        self.last_update = update_start;
     }
 }
 
 impl HasSize for Boids {
     fn size(&self) -> Vec2 {
         vec2(self.sim_width, self.sim_height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{Input, RecordingCanvas};
+    use crate::rng;
+
+    const W: f32 = 400.;
+    const H: f32 = 400.;
+    const COUNT: usize = 40;
+    const STEP: Duration = Duration::from_millis(16);
+
+    fn sim(seed: u64) -> Boids {
+        Boids::init(COUNT, W, H, rng::seeded(seed))
+    }
+
+    fn step(sim: &mut Boids, times: usize) {
+        for _ in 0..times {
+            sim.update(STEP, &Input::none());
+        }
+    }
+
+    #[test]
+    fn boids_stay_on_screen() {
+        let mut sim = sim(1);
+        step(&mut sim, 120);
+
+        for boid in sim.boids.state() {
+            assert!(
+                (0.0..=W).contains(&boid.pos.x) && (0.0..=H).contains(&boid.pos.y),
+                "boid escaped to {:?}",
+                boid.pos
+            );
+        }
+    }
+
+    #[test]
+    fn boids_keep_moving_within_their_speed_limits() {
+        let mut sim = sim(2);
+        step(&mut sim, 60);
+
+        for boid in sim.boids.state() {
+            let speed = boid.vel.length();
+            assert!(
+                (BOID_MIN_SPEED - 1e-2..=BOID_MAX_SPEED + 1e-2).contains(&speed),
+                "speed {speed} outside its clamp"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_goes_to_nan() {
+        let mut sim = sim(3);
+        step(&mut sim, 120);
+
+        assert!(
+            sim.boids
+                .state()
+                .iter()
+                .all(|b| b.pos.is_finite() && b.vel.is_finite())
+        );
+    }
+
+    #[test]
+    fn the_flock_is_neither_gained_nor_lost() {
+        let mut sim = sim(4);
+        step(&mut sim, 30);
+
+        assert_eq!(COUNT, sim.boids.state().len());
+    }
+
+    #[test]
+    fn two_boids_on_top_of_each_other_push_apart() {
+        let boids = vec![
+            Boid::new(0, W / 2., H / 2., 0.),
+            Boid::new(1, W / 2. + 1., H / 2., PI),
+        ];
+        let mut sim = Boids::new(boids, W, H, rng::seeded(5));
+
+        let before = sim.boids.state()[0].pos.distance(sim.boids.state()[1].pos);
+        step(&mut sim, 10);
+        let after = sim.boids.state()[0].pos.distance(sim.boids.state()[1].pos);
+
+        assert!(after > before, "separation went {before} -> {after}");
+    }
+
+    #[test]
+    fn a_zero_length_step_changes_nothing() {
+        let mut sim = sim(6);
+        step(&mut sim, 5);
+
+        let before: Vec<Vec2> = sim.boids.state().iter().map(|b| b.pos).collect();
+        sim.update(Duration::ZERO, &Input::none());
+        let after: Vec<Vec2> = sim.boids.state().iter().map(|b| b.pos).collect();
+
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn the_same_seed_replays_the_same_flock() {
+        let (mut a, mut b) = (sim(42), sim(42));
+        step(&mut a, 30);
+        step(&mut b, 30);
+
+        let positions = |s: &Boids| s.boids.state().iter().map(|x| x.pos).collect::<Vec<_>>();
+        assert_eq!(positions(&a), positions(&b));
+    }
+
+    #[test]
+    fn drawing_emits_one_triangle_per_boid() {
+        let mut sim = sim(7);
+        step(&mut sim, 3);
+
+        let mut canvas = RecordingCanvas::new();
+        sim.draw(&mut canvas);
+
+        assert_eq!(COUNT, canvas.triangles().count());
     }
 }

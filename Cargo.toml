@@ -2,16 +2,18 @@
 name = "deskthing"
 version = "0.1.0"
 edition = "2024"
-author = "Laura Powles <laura@laurapowles.com>"
+authors = ["Laura Powles <laura@laurapowles.com>"]
 repository = "github.com/nebulaeandstars/deskthing"
 readme = "README.md"
-license = "LICENSE"
+license-file = "LICENSE"
 
 [profile.release]
 opt-level = 3
 strip = true
 
 [dependencies]
+glam = "0.27"
 macroquad = "0.4.15"
+rand = "0.10.3"
 rayon = "1.12"
 # serde = "1.0"

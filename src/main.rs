@@ -16,25 +16,31 @@
 
 mod buffer;
 mod component;
+mod engine;
 mod grid;
+mod rng;
 mod shaders;
 mod simulations;
 mod traits;
 
 use component::ComponentFrame;
+use engine::{ImageBuffer, to_mq_color};
 use simulations::*;
-use traits::*;
 
 use grid::Grid;
 use macroquad::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const BADAPPLE_X: usize = 320;
 const BADAPPLE_Y: usize = 240;
 
-pub const BG_COLOR: Color = Color::new(0.18, 0.18, 0.18, 1.0);
-pub const OUTLINE_COLOR: Color = Color::new(0.8, 0.8, 0.8, 1.0);
+// The app palette, in engine colours so simulations can use it too. The host
+// converts when it makes its own macroquad calls.
+pub const BG_COLOR: engine::Color = engine::Color::new(0.18, 0.18, 0.18, 1.0);
+pub const OUTLINE_COLOR: engine::Color = engine::Color::new(0.8, 0.8, 0.8, 1.0);
 pub const OUTLINE_THICKNESS: f32 = 4.0;
 
 const AUTOMATA_WIDTH: usize = 200;
@@ -46,37 +52,27 @@ const NUM_BOIDS: usize = 500;
 const COLORLIFE_PARTICLES: usize = 3000;
 const FLUID_PARTICLES: usize = 2000;
 
-struct Video {
-    pub frames: Vec<Image>,
-    pub framerate: u32,
-}
-
 #[macroquad::main("window_config")]
 async fn main() {
-    // let mut sim = default_sim();
-
     // generate_bitmaps().await;
     // generate_distance_fields().await;
     let bad_apple = load_distance_fields().await;
 
-    let fluid = FluidSim::init(FLUID_PARTICLES, SIM_WIDTH, SIM_HEIGHT, bad_apple);
-    let mut sim = ComponentFrame::relative_to_screen(fluid, vec2(0.2, 0.2), vec2(0.6, 0.6));
+    let mut sim = default_sim(&bad_apple);
 
-    // let start = Instant::now();
+    // One clock for the whole app. Simulations are told how much time passed;
+    // none of them reads a clock itself.
+    let mut last_frame = Instant::now();
+
     loop {
-        clear_background(BG_COLOR);
+        clear_background(to_mq_color(BG_COLOR));
 
-        // let now = Instant::now();
-        // let time_since_start = now - start;
-        // let frame = (time_since_start.as_secs_f32() * 30.).round() as usize; // 30 fps
+        let now = Instant::now();
+        let dt = now - last_frame;
+        last_frame = now;
 
-        // TODO: Remove
-        // let frame = frame % bad_apple.len();
-        // let bitmap = &mut bad_apple[frame];
-        // bitmap.draw();
-
-        handle_sim_selection(&mut sim);
-        update(&mut sim);
+        handle_sim_selection(&mut sim, &bad_apple);
+        update(&mut sim, dt);
         draw(&mut sim);
         next_frame().await;
     }
@@ -91,30 +87,10 @@ fn window_config() -> Conf {
     }
 }
 
-async fn load_bad_apple() -> Video {
-    let mut files = std::fs::read_dir("./resources/badapple/frames/")
-        .unwrap()
-        .collect::<Vec<_>>();
-
-    files.sort_by_key(|file| file.as_ref().unwrap().file_name());
-    let mut frames = Vec::with_capacity(files.len());
-
-    for file in files {
-        let file = file.unwrap();
-        let path = file.path();
-
-        println!("loading {}", file.file_name().to_str().unwrap());
-        let image = load_image(path.to_str().unwrap()).await.unwrap();
-
-        frames.push(image);
-    }
-
-    Video {
-        frames,
-        framerate: 30,
-    }
-}
-
+// The asset pipeline. Run once by uncommenting the calls in `main`:
+// PNG frames -> bitmaps.bin -> distance_fields.bin. Both outputs are
+// gitignored, so a fresh clone has to regenerate them before the app will run.
+#[allow(dead_code)]
 async fn generate_bitmaps() {
     let mut out = File::create("./resources/badapple/bitmaps.bin").unwrap();
 
@@ -129,13 +105,14 @@ async fn generate_bitmaps() {
         let image = load_image(path.to_str().unwrap()).await.unwrap();
         println!("writing {}", file.file_name().to_str().unwrap());
 
-        let bitmap = BinaryBitmap::from_image(&image);
+        let bitmap = BinaryBitmap::from_image(&to_image_buffer(&image));
         let bin = bitmap.grid.iter().map(|b| *b as u8).collect::<Vec<_>>();
 
         out.write_all(&bin).unwrap();
     }
 }
 
+#[allow(dead_code)]
 async fn generate_distance_fields() {
     let mut out = File::create("./resources/badapple/distance_fields.bin").unwrap();
     let bitmaps = load_bitmaps().await;
@@ -154,6 +131,7 @@ async fn generate_distance_fields() {
     }
 }
 
+#[allow(dead_code)]
 async fn load_bitmaps() -> Vec<BinaryBitmap> {
     println!("loading bitmaps.bin...");
     let mut file = File::open("./resources/badapple/bitmaps.bin").unwrap();
@@ -170,7 +148,7 @@ async fn load_bitmaps() -> Vec<BinaryBitmap> {
     obstacles
 }
 
-async fn load_distance_fields() -> Vec<DistanceField> {
+async fn load_distance_fields() -> Arc<Vec<DistanceField>> {
     println!("loading distance_fields.bin...");
     let mut file = File::open("./resources/badapple/distance_fields.bin").unwrap();
     let mut distance_fields = Vec::new();
@@ -186,39 +164,67 @@ async fn load_distance_fields() -> Vec<DistanceField> {
         distance_fields.push(distance_field);
     }
 
-    distance_fields
+    Arc::new(distance_fields)
 }
 
-// fn default_sim() -> ComponentFrame {
-//     let default_sim = FluidSim::init(FLUID_PARTICLES, SIM_WIDTH, SIM_HEIGHT);
-//     ComponentFrame::relative_to_screen(default_sim, vec2(0.2, 0.2), vec2(0.6, 0.6))
-// }
+/// Bridges a macroquad-loaded image into the engine-agnostic buffer the
+/// bitmap code expects. Only the asset pipeline needs this.
+fn to_image_buffer(image: &Image) -> ImageBuffer {
+    ImageBuffer::from_rgba8(image.bytes.clone(), image.width, image.height)
+}
 
-fn handle_sim_selection(sim: &mut ComponentFrame) {
+/// The video is shared by `Arc`, so rebuilding the fluid sim is a refcount
+/// bump rather than a copy of every distance field.
+fn fluid_sim(video: &Arc<Vec<DistanceField>>) -> FluidSim {
+    FluidSim::init(
+        FLUID_PARTICLES,
+        SIM_WIDTH,
+        SIM_HEIGHT,
+        Arc::clone(video),
+        rng::from_entropy(),
+    )
+}
+
+fn default_sim(video: &Arc<Vec<DistanceField>>) -> ComponentFrame {
+    ComponentFrame::relative_to_screen(fluid_sim(video), vec2(0.2, 0.2), vec2(0.6, 0.6))
+}
+
+fn handle_sim_selection(sim: &mut ComponentFrame, video: &Arc<Vec<DistanceField>>) {
     if is_key_pressed(KeyCode::A) {
         sim.set_component(Conway::random(
             _CONWAY,
             0.6,
             AUTOMATA_WIDTH,
             AUTOMATA_HEIGHT,
+            rng::from_entropy(),
         ));
     } else if is_key_pressed(KeyCode::B) {
-        sim.set_component(Boids::init(NUM_BOIDS, SIM_WIDTH, SIM_HEIGHT));
+        sim.set_component(Boids::init(
+            NUM_BOIDS,
+            SIM_WIDTH,
+            SIM_HEIGHT,
+            rng::from_entropy(),
+        ));
     } else if is_key_pressed(KeyCode::C) {
-        sim.set_component(Colorlife::init(COLORLIFE_PARTICLES, SIM_WIDTH, SIM_HEIGHT));
+        sim.set_component(Colorlife::init(
+            COLORLIFE_PARTICLES,
+            SIM_WIDTH,
+            SIM_HEIGHT,
+            rng::from_entropy(),
+        ));
     } else if is_key_pressed(KeyCode::D) {
-        // sim.set_component(FluidSim::init(FLUID_PARTICLES, SIM_WIDTH, SIM_HEIGHT));
+        sim.set_component(fluid_sim(video));
     }
 }
 
-fn update(sim: &mut ComponentFrame) {
+fn update(sim: &mut ComponentFrame, dt: Duration) {
     sim.refit_to_screen(vec2(0.2, 0.2), vec2(0.6, 0.6));
     sim.refit_to_component();
-    sim.update();
+    sim.update(dt);
 }
 
 fn draw(sim: &mut ComponentFrame) {
-    clear_background(BG_COLOR);
+    clear_background(to_mq_color(BG_COLOR));
     sim.draw();
     sim.draw_outline(4., WHITE);
 }

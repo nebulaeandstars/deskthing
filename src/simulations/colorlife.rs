@@ -1,10 +1,11 @@
 use crate::buffer::DoubleBuffer;
+use crate::engine::{Canvas, Color, Input, Vec2, vec2};
 use crate::grid::Grid;
-use crate::traits::*;
+use crate::rng::{Rng, RngExt};
+use crate::traits::{HasSize, Simulation};
 
-use macroquad::prelude::*;
 use rayon::prelude::*;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const MIN_SPEED: f32 = 0.0;
 const MAX_SPEED: f32 = 100.0;
@@ -25,13 +26,11 @@ pub enum CreatureType {
 }
 
 impl CreatureType {
-    pub fn random() -> Self {
-        let i = rand::rand() % 3;
-        match i {
+    pub fn random(rng: &mut Rng) -> Self {
+        match rng.random_range(0..3u32) {
             0 => CreatureType::Red,
             1 => CreatureType::Green,
-            2 => CreatureType::Blue,
-            _ => panic!(),
+            _ => CreatureType::Blue,
         }
     }
 
@@ -165,19 +164,10 @@ impl Creature {
         new_creature
     }
 
-    pub fn draw(&self) {
-        // draw_circle(
-        //     self.pos.x + frame.x(),
-        //     self.pos.y + frame.y(),
-        //     self.size,
-        //     self.species.color().with_alpha(0.75),
-        // );
-
-        draw_rectangle(
-            self.pos.x - self.size / 2.,
-            self.pos.y - self.size / 2.,
-            self.size,
-            self.size,
+    pub fn draw(&self, canvas: &mut dyn Canvas) {
+        canvas.rect(
+            self.pos - Vec2::splat(self.size / 2.),
+            Vec2::splat(self.size),
             self.species.color().with_alpha(0.75),
         );
     }
@@ -189,7 +179,6 @@ pub struct Colorlife {
     sim_height: f32,
     creatures: DoubleBuffer<Vec<Creature>>,
     chunks: Grid<Vec<usize>>,
-    last_update: Instant,
 }
 
 impl Colorlife {
@@ -205,19 +194,19 @@ impl Colorlife {
             sim_height,
             creatures,
             chunks: Grid::with_defaults(columns, rows),
-            last_update: Instant::now(),
         }
     }
 
-    pub fn init(num_creatures: usize, sim_width: f32, sim_height: f32) -> Self {
-        let mut creatures = Vec::new();
+    pub fn init(num_creatures: usize, sim_width: f32, sim_height: f32, mut rng: Rng) -> Self {
+        const CREATURE_SIZE: f32 = 5.;
+
+        let mut creatures = Vec::with_capacity(num_creatures);
 
         for i in 0..num_creatures {
-            let x = rand::gen_range(100., sim_width - 100.);
-            let y = rand::gen_range(100., sim_height - 100.);
-            let size = rand::gen_range(5., 5.);
-            let species = CreatureType::random();
-            creatures.push(Creature::new(i, x, y, size, species));
+            let x = rng.random_range(100.0..sim_width - 100.);
+            let y = rng.random_range(100.0..sim_height - 100.);
+            let species = CreatureType::random(&mut rng);
+            creatures.push(Creature::new(i, x, y, CREATURE_SIZE, species));
         }
 
         Self::new(creatures, sim_width, sim_height)
@@ -250,18 +239,17 @@ impl Colorlife {
     }
 }
 
-impl Draw for Colorlife {
-    fn draw(&mut self) {
+impl Simulation for Colorlife {
+    fn draw(&mut self, canvas: &mut dyn Canvas) {
         for creature in self.creatures.state() {
-            creature.draw();
+            creature.draw(canvas);
         }
     }
-}
 
-impl Update for Colorlife {
-    fn update(&mut self) {
-        let update_start = Instant::now();
-        let deltatime = update_start - self.last_update;
+    fn update(&mut self, deltatime: Duration, _input: &Input) {
+        if deltatime.is_zero() {
+            return;
+        }
 
         self.update_chunks();
 
@@ -291,12 +279,133 @@ impl Update for Colorlife {
             });
 
         self.creatures.swap();
-        self.last_update = update_start;
     }
 }
 
 impl HasSize for Colorlife {
     fn size(&self) -> Vec2 {
         vec2(self.sim_width, self.sim_height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{Input, RecordingCanvas};
+    use crate::rng;
+
+    const W: f32 = 500.;
+    const H: f32 = 500.;
+    const COUNT: usize = 40;
+    const STEP: Duration = Duration::from_millis(16);
+
+    fn sim(seed: u64) -> Colorlife {
+        Colorlife::init(COUNT, W, H, rng::seeded(seed))
+    }
+
+    fn step(sim: &mut Colorlife, times: usize) {
+        for _ in 0..times {
+            sim.update(STEP, &Input::none());
+        }
+    }
+
+    #[test]
+    fn creatures_stay_on_screen() {
+        let mut sim = sim(1);
+        step(&mut sim, 120);
+
+        for creature in sim.creatures.state() {
+            assert!(
+                (0.0..=W).contains(&creature.pos.x) && (0.0..=H).contains(&creature.pos.y),
+                "creature escaped to {:?}",
+                creature.pos
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_goes_to_nan() {
+        let mut sim = sim(2);
+        step(&mut sim, 120);
+
+        assert!(
+            sim.creatures
+                .state()
+                .iter()
+                .all(|c| c.pos.is_finite() && c.vel.is_finite())
+        );
+    }
+
+    #[test]
+    fn the_population_is_stable() {
+        let mut sim = sim(3);
+        step(&mut sim, 30);
+
+        assert_eq!(COUNT, sim.creatures.state().len());
+    }
+
+    #[test]
+    fn a_zero_length_step_changes_nothing() {
+        let mut sim = sim(4);
+        step(&mut sim, 5);
+
+        let before: Vec<Vec2> = sim.creatures.state().iter().map(|c| c.pos).collect();
+        sim.update(Duration::ZERO, &Input::none());
+        let after: Vec<Vec2> = sim.creatures.state().iter().map(|c| c.pos).collect();
+
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn the_same_seed_replays_the_same_run() {
+        let (mut a, mut b) = (sim(42), sim(42));
+        step(&mut a, 30);
+        step(&mut b, 30);
+
+        let positions = |s: &Colorlife| {
+            s.creatures
+                .state()
+                .iter()
+                .map(|c| c.pos)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(positions(&a), positions(&b));
+    }
+
+    #[test]
+    fn species_forces_are_asymmetric() {
+        // Particle life is only interesting because A pulling on B does not
+        // imply B pulling on A.
+        assert_ne!(
+            CreatureType::Red.force_on(CreatureType::Green),
+            CreatureType::Green.force_on(CreatureType::Red)
+        );
+    }
+
+    #[test]
+    fn all_three_species_get_generated() {
+        let mut rng = rng::seeded(9);
+        let mut seen = [false; 3];
+
+        for _ in 0..200 {
+            match CreatureType::random(&mut rng) {
+                CreatureType::Red => seen[0] = true,
+                CreatureType::Green => seen[1] = true,
+                CreatureType::Blue => seen[2] = true,
+            }
+        }
+
+        assert_eq!([true, true, true], seen);
+    }
+
+    #[test]
+    fn drawing_emits_one_rect_per_creature() {
+        let mut sim = sim(5);
+        step(&mut sim, 3);
+
+        let mut canvas = RecordingCanvas::new();
+        sim.draw(&mut canvas);
+
+        assert_eq!(COUNT, canvas.rects().count());
     }
 }

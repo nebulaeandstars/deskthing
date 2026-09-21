@@ -1,53 +1,21 @@
-use crate::component::Frame;
-use macroquad::prelude::*;
+use crate::engine::{Canvas, Input, Vec2};
+
 use std::fmt::Debug;
+use std::time::Duration;
 
-pub trait Draw {
-    fn draw(&mut self);
+/// A simulation that changes over time and can describe itself to a [`Canvas`].
+///
+/// [`HasSize`] supplies the extent of the simulation's own coordinate space,
+/// which is what the host fits into wherever it is displayed.
+pub trait Simulation: HasSize + Debug + 'static {
+    /// Advances the simulation by `dt`.
+    fn update(&mut self, dt: Duration, input: &Input);
+
+    /// Describes the current state to `canvas`.
+    fn draw(&mut self, canvas: &mut dyn Canvas);
 }
 
-pub trait DrawWithContext {
-    fn draw_with_context(&mut self, context: &mut Frame);
-}
-
-impl<T> DrawWithContext for T
-where
-    T: Draw,
-{
-    fn draw_with_context(&mut self, _context: &mut Frame) {
-        self.draw();
-    }
-}
-
-pub trait Update {
-    fn update(&mut self) {}
-}
-
-pub trait UpdateWithContext {
-    fn update_with_context(&mut self, context: &Frame);
-}
-
-impl<T> UpdateWithContext for T
-where
-    T: Update,
-{
-    fn update_with_context(&mut self, _context: &Frame) {
-        self.update();
-    }
-}
-
-pub trait HasSize {
-    fn size(&self) -> Vec2;
-
-    fn width(&self) -> f32 {
-        self.size().x
-    }
-
-    fn height(&self) -> f32 {
-        self.size().y
-    }
-}
-
+/// An object that has a position.
 pub trait HasPosition {
     fn pos(&self) -> Vec2;
 
@@ -60,6 +28,15 @@ pub trait HasPosition {
     }
 }
 
-pub trait Component: HasSize + DrawWithContext + UpdateWithContext + Debug + 'static {}
+/// An object that has a size.
+pub trait HasSize {
+    fn size(&self) -> Vec2;
 
-impl<T> Component for T where T: HasSize + DrawWithContext + UpdateWithContext + Debug + 'static {}
+    fn width(&self) -> f32 {
+        self.size().x
+    }
+
+    fn height(&self) -> f32 {
+        self.size().y
+    }
+}

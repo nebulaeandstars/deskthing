@@ -1,9 +1,8 @@
 #![allow(unused)]
 
-use crate::component::Frame;
-use crate::traits::*;
+use crate::engine::{Canvas, Color, Vec2, vec2};
+use crate::traits::HasSize;
 
-use macroquad::prelude::*;
 use rayon::prelude::*;
 use std::iter::IntoIterator;
 
@@ -41,15 +40,43 @@ impl<T: Default> Grid<T> {
 #[allow(unused)]
 impl<T> Grid<T> {
     /// Constructs a new grid with the given values.
+    ///
+    /// # Panics
+    /// If `cells` is not exactly `columns * rows` long. This is a hard assert
+    /// rather than a debug one: a grid whose length disagrees with its
+    /// dimensions indexes wrongly for the rest of its life, and the check is a
+    /// single multiply in a constructor.
     pub fn new(cells: Vec<T>, columns: usize, rows: usize) -> Self {
-        let grid = Self {
+        assert_eq!(
+            columns * rows,
+            cells.len(),
+            "grid of {columns}x{rows} needs {} cells, got {}",
+            columns * rows,
+            cells.len()
+        );
+
+        Self {
             inner: cells,
             columns,
             rows,
-        };
+        }
+    }
 
-        debug_assert_eq!(grid.size(), grid.inner.len());
-        grid
+    /// Like [`Self::from_generator`], but for a generator that carries state —
+    /// a random number generator, say.
+    pub fn from_generator_mut<F: FnMut(usize, usize) -> T>(
+        columns: usize,
+        rows: usize,
+        mut f: F,
+    ) -> Self {
+        let mut cells = Vec::with_capacity(columns * rows);
+        for row in 0..rows {
+            for col in 0..columns {
+                cells.push(f(col, row));
+            }
+        }
+
+        Self::new(cells, columns, rows)
     }
 
     /// Constructs a new grid, generating values according to the generator
@@ -220,21 +247,14 @@ impl<T> Grid<T> {
         self.get_neighbourhood_coords(column, row, distance)
     }
 
-    pub fn draw_gridlines(&self, grid_pos: Vec2, grid_size: Vec2) {
-        let width = grid_size.x / self.columns() as f32;
-        let height = grid_size.y / self.rows() as f32;
-
-        for column in 0..self.columns() {
-            for row in 0..self.rows() {
-                let x = grid_pos.x + column as f32 * width;
-                let y = grid_pos.y + row as f32 * height;
-
-                draw_rectangle_lines(x, y, width, height, 4., crate::OUTLINE_COLOR);
-            }
-        }
-    }
-
-    pub fn highlight_cell(&self, pos: Vec2, color: Color, grid_pos: Vec2, grid_size: Vec2) {
+    pub fn highlight_cell(
+        &self,
+        canvas: &mut dyn Canvas,
+        pos: Vec2,
+        color: Color,
+        grid_pos: Vec2,
+        grid_size: Vec2,
+    ) {
         let width = grid_size.x / self.columns() as f32;
         let height = grid_size.y / self.rows() as f32;
 
@@ -245,13 +265,20 @@ impl<T> Grid<T> {
                 if target_cell == (column as isize, row as isize) {
                     let x = grid_pos.x + column as f32 * width;
                     let y = grid_pos.y + row as f32 * height;
-                    draw_rectangle(x, y, width, height, color);
+                    canvas.rect(vec2(x, y), vec2(width, height), color);
                 }
             }
         }
     }
 
-    pub fn highlight_neighbours(&self, pos: Vec2, color: Color, grid_pos: Vec2, grid_size: Vec2) {
+    pub fn highlight_neighbours(
+        &self,
+        canvas: &mut dyn Canvas,
+        pos: Vec2,
+        color: Color,
+        grid_pos: Vec2,
+        grid_size: Vec2,
+    ) {
         let width = grid_size.x / self.columns() as f32;
         let height = grid_size.y / self.rows() as f32;
 
@@ -266,7 +293,7 @@ impl<T> Grid<T> {
                 {
                     let x = grid_pos.x + column as f32 * width;
                     let y = grid_pos.y + row as f32 * height;
-                    draw_rectangle(x, y, width, height, color);
+                    canvas.rect(vec2(x, y), vec2(width, height), color);
                 }
             }
         }
@@ -276,20 +303,6 @@ impl<T> Grid<T> {
 impl<T> HasSize for Grid<T> {
     fn size(&self) -> Vec2 {
         vec2(self.columns as f32, self.rows as f32)
-    }
-}
-
-impl<T: DrawWithContext> DrawWithContext for Grid<T> {
-    fn draw_with_context(&mut self, context: &mut Frame) {
-        self.draw_gridlines(vec2(0., 0.), vec2(context.width(), context.height()));
-        self.iter_mut()
-            .for_each(|cell| cell.draw_with_context(context));
-    }
-}
-
-impl<T: Update> Update for Grid<T> {
-    fn update(&mut self) {
-        self.iter_mut().for_each(Update::update);
     }
 }
 
