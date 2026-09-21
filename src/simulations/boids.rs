@@ -50,8 +50,10 @@ impl Boid {
         }
     }
 
+    /// Falls back to a fixed direction when stationary: `normalize` on a zero
+    /// vector is NaN, and a NaN heading poisons the boid permanently.
     fn heading(&self) -> Vec2 {
-        self.vel.normalize()
+        self.vel.normalize_or(Vec2::X)
     }
 
     pub fn clamp_to_frame(&mut self, sim_width: f32, sim_height: f32) {
@@ -69,10 +71,15 @@ impl Boid {
     }
 
     pub fn clamp_speed(&mut self) {
-        if self.vel.length() < BOID_MIN_SPEED {
-            self.vel = self.vel.normalize() * BOID_MIN_SPEED;
-        } else if self.vel.length() > BOID_MAX_SPEED {
-            self.vel = self.vel.normalize() * BOID_MAX_SPEED;
+        // Boids have a non-zero minimum speed, so this branch is live — and a
+        // boid that came to a dead stop would normalize to NaN without the
+        // fallback direction.
+        let speed = self.vel.length();
+
+        if speed < BOID_MIN_SPEED {
+            self.vel = self.vel.normalize_or(Vec2::X) * BOID_MIN_SPEED;
+        } else if speed > BOID_MAX_SPEED {
+            self.vel *= BOID_MAX_SPEED / speed;
         }
     }
 
@@ -270,29 +277,28 @@ impl Simulation for Boids {
         let sim_height = self.sim_height;
         self.update_chunks();
 
-        let (boids, chunks) = (&mut self.boids, &self.chunks);
+        let chunks = &self.chunks;
 
-        let (state, next) = boids.states();
+        self.boids.generate(|state, next| {
+            next.par_iter_mut().enumerate().for_each(|(i, new_boid)| {
+                let old_boid = &state[i];
 
-        next.par_iter_mut().enumerate().for_each(|(i, new_boid)| {
-            let old_boid = &state[i];
+                let neighbours = chunks
+                    .get_neighbourhood_at_pos(
+                        old_boid.pos,
+                        1,
+                        vec2(0., 0.),
+                        vec2(sim_width, sim_height),
+                    )
+                    .flat_map(|chunk| chunk.iter())
+                    .copied()
+                    .filter(|&j| j != i)
+                    .map(|j| &state[j]);
 
-            let neighbours = chunks
-                .get_neighbourhood_at_pos(
-                    old_boid.pos,
-                    1,
-                    vec2(0., 0.),
-                    vec2(self.sim_width, self.sim_height),
-                )
-                .flat_map(|chunk| chunk.iter())
-                .copied()
-                .filter(|&j| j != i)
-                .map(|j| &state[j]);
-
-            *new_boid = old_boid.update(deltatime, neighbours, sim_width, sim_height, wanders[i]);
+                *new_boid =
+                    old_boid.update(deltatime, neighbours, sim_width, sim_height, wanders[i]);
+            });
         });
-
-        self.boids.swap();
     }
 }
 

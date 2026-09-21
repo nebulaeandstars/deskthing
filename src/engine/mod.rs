@@ -11,6 +11,7 @@
 // reach for. Unused entries here are surface, not dead weight.
 #![allow(dead_code, unused_imports)]
 
+mod audio;
 mod canvas;
 mod color;
 mod image;
@@ -19,11 +20,14 @@ mod macroquad_backend;
 #[cfg(test)]
 mod recording;
 
+pub use audio::{Audio, SoundId};
+#[cfg(test)]
+pub use audio::{AudioCall, RecordingAudio};
 pub use canvas::{Canvas, Effect, LayerId, TextureId};
 pub use color::{BLACK, BLANK, BLUE, Color, GREEN, RED, WHITE};
 pub use image::ImageBuffer;
 pub use input::{Input, MouseButton};
-pub use macroquad_backend::{MacroquadCanvas, to_mq_color};
+pub use macroquad_backend::{MacroquadAudio, MacroquadCanvas, to_mq_color};
 #[cfg(test)]
 pub use recording::{DrawCall, RecordingCanvas};
 

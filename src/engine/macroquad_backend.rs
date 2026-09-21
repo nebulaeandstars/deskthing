@@ -3,9 +3,10 @@
 //! This is the only place that knows both vocabularies. Everything
 //! macroquad-shaped stops here.
 
-use super::{Canvas, Color, Effect, ImageBuffer, LayerId, TextureId, Vec2};
+use super::{Audio, Canvas, Color, Effect, ImageBuffer, LayerId, SoundId, TextureId, Vec2};
 use crate::shaders::liquid_material;
 
+use macroquad::audio as mq_audio;
 use macroquad::prelude as mq;
 
 /// Owns the GPU resources that simulations refer to by handle.
@@ -83,6 +84,30 @@ impl MacroquadCanvas {
     fn texture(&self, id: TextureId) -> &mq::Texture2D {
         &self.textures[id.0]
     }
+
+    /// How many sides to approximate a circle of `radius` with.
+    ///
+    /// `macroquad::draw_circle` is hard-coded to twenty sides regardless of
+    /// size, which is a lot of triangles for a three-pixel particle. Choosing
+    /// the count from the on-screen radius keeps the error under half a pixel
+    /// while costing a fraction of the geometry. This is the backend's call to
+    /// make — a simulation asks for a circle and should not have to think
+    /// about tessellation.
+    fn circle_sides(&self, radius: f32) -> u8 {
+        // zoom.x is 2/view_width, so this recovers pixels per world unit.
+        let target_width = self
+            .target
+            .as_ref()
+            .map_or_else(mq::screen_width, |target| target.texture.width());
+        let pixels_per_unit = (target_width * self.zoom.x / 2.0).abs();
+        let radius_px = radius * pixels_per_unit;
+
+        // Sagitta error for an n-gon is about r*pi^2/(2n^2); under half a
+        // pixel means n > pi*sqrt(r).
+        let ideal = std::f32::consts::PI * radius_px.max(0.).sqrt();
+
+        (ideal.ceil() as u32).clamp(6, 40) as u8
+    }
 }
 
 /// Translates an engine colour into macroquad's. Public so the host's own
@@ -112,7 +137,8 @@ impl Canvas for MacroquadCanvas {
     }
 
     fn circle(&mut self, centre: Vec2, radius: f32, color: Color) {
-        mq::draw_circle(centre.x, centre.y, radius, to_mq_color(color));
+        let sides = self.circle_sides(radius);
+        mq::draw_poly(centre.x, centre.y, sides, radius, 0., to_mq_color(color));
     }
 
     fn rect(&mut self, pos: Vec2, size: Vec2, color: Color) {
@@ -132,7 +158,15 @@ impl Canvas for MacroquadCanvas {
     }
 
     fn update_texture(&mut self, texture: TextureId, image: &ImageBuffer) {
-        self.texture(texture).update(&to_mq_image(image));
+        let existing = self.texture(texture);
+
+        debug_assert_eq!(
+            (existing.width() as u16, existing.height() as u16),
+            (image.width(), image.height()),
+            "update_texture requires the image to match the texture it was created with"
+        );
+
+        existing.update(&to_mq_image(image));
     }
 
     fn draw_texture(&mut self, texture: TextureId, pos: Vec2, size: Vec2, tint: Color) {
@@ -209,5 +243,114 @@ impl MacroquadCanvas {
 
         self.layers.push(Layer { target, size });
         LayerId(self.layers.len() - 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reproduces the tessellation heuristic without a graphics context: the
+    /// real method needs a render target, but the arithmetic is the same.
+    fn sides_for(radius_px: f32) -> u8 {
+        let ideal = std::f32::consts::PI * radius_px.max(0.).sqrt();
+        (ideal.ceil() as u32).clamp(6, 40) as u8
+    }
+
+    #[test]
+    fn small_marks_get_far_fewer_sides_than_macroquads_fixed_twenty() {
+        // A fluid particle is drawn at radius 3.
+        assert!(sides_for(3.) < 20, "{} sides", sides_for(3.));
+    }
+
+    #[test]
+    fn sides_never_drop_below_a_recognisable_polygon() {
+        for radius in [0., 0.1, 1.] {
+            assert_eq!(6, sides_for(radius));
+        }
+    }
+
+    #[test]
+    fn sides_grow_with_radius_and_stay_bounded() {
+        assert!(sides_for(10.) > sides_for(3.));
+        assert!(sides_for(1000.) <= 40);
+    }
+
+    #[test]
+    fn the_half_pixel_error_bound_holds() {
+        for radius in [1., 3., 10., 50., 160.] {
+            let n = f32::from(sides_for(radius));
+            // Exact sagitta: r * (1 - cos(pi/n)).
+            let error = radius * (1. - (std::f32::consts::PI / n).cos());
+            assert!(
+                error < 0.5,
+                "radius {radius} with {n} sides errs by {error}px"
+            );
+        }
+    }
+}
+
+/// Owns the decoded sounds that callers refer to by handle.
+///
+/// Loading lives here rather than on the [`Audio`] trait: decoding is a
+/// backend concern, and macroquad's loader is asynchronous, which a plain
+/// trait method cannot express.
+#[derive(Default)]
+pub struct MacroquadAudio {
+    sounds: Vec<mq_audio::Sound>,
+}
+
+impl std::fmt::Debug for MacroquadAudio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MacroquadAudio")
+            .field("sounds", &self.sounds.len())
+            .finish()
+    }
+}
+
+impl MacroquadAudio {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decodes a sound file and returns a handle to it.
+    ///
+    /// Ogg Vorbis and WAV; macroquad decodes nothing else, so an mp4's audio
+    /// track has to be extracted first.
+    pub async fn load(&mut self, path: &str) -> Result<SoundId, macroquad::Error> {
+        let sound = mq_audio::load_sound(path).await?;
+
+        self.sounds.push(sound);
+        Ok(SoundId(self.sounds.len() - 1))
+    }
+
+    fn sound(&self, id: SoundId) -> &mq_audio::Sound {
+        &self.sounds[id.0]
+    }
+}
+
+impl Audio for MacroquadAudio {
+    fn play(&mut self, sound: SoundId, looped: bool) {
+        mq_audio::play_sound(
+            self.sound(sound),
+            mq_audio::PlaySoundParams {
+                looped,
+                volume: 1.0,
+            },
+        );
+    }
+
+    fn stop(&mut self, sound: SoundId) {
+        mq_audio::stop_sound(self.sound(sound));
+    }
+
+    fn stop_all(&mut self) {
+        for sound in &self.sounds {
+            mq_audio::stop_sound(sound);
+        }
+    }
+
+    fn set_volume(&mut self, sound: SoundId, volume: f32) {
+        mq_audio::set_sound_volume(self.sound(sound), volume.clamp(0., 1.));
     }
 }

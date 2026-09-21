@@ -9,6 +9,11 @@ use std::time::Duration;
 
 const ALIVE_COLOR: Color = Color::new(0.8, 0.8, 0.8, 1.0);
 const GHOST_COLOR: Color = Color::new(0.6, 0.6, 0.8, 1.0);
+/// How many ticks a dead cell's trail takes to fade out. The visibility test
+/// and the alpha ramp both derive from this: when they disagreed, trails older
+/// than the ramp were drawn with *negative* alpha, which subtracts under
+/// source-alpha blending instead of fading.
+const GHOST_FADE_TICKS: usize = 5;
 const UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 
 pub const _CONWAY: &str = "B3/S23";
@@ -156,27 +161,27 @@ impl Conway {
     }
 
     pub fn apply_rule(&mut self, rule: &Rule) {
-        let (current, next) = self.buffer.states();
+        let width = self.width;
 
-        next.par_iter_mut()
-            .enumerate()
-            .for_each(|(index, new_cell)| {
-                let x = (index % self.width) as isize;
-                let y = (index / self.width) as isize;
+        self.buffer.generate(|current, next| {
+            next.par_iter_mut()
+                .enumerate()
+                .for_each(|(index, new_cell)| {
+                    let x = (index % width) as isize;
+                    let y = (index / width) as isize;
 
-                let neighbours = current
-                    .get_neighbours(x, y, 1)
-                    .filter(|cell| cell.is_alive())
-                    .count();
+                    let neighbours = current
+                        .get_neighbours(x, y, 1)
+                        .filter(|cell| cell.is_alive())
+                        .count();
 
-                let old_cell = current
-                    .get(x, y)
-                    .expect("conway: grid size changed unexpectedly between updates");
+                    let old_cell = current
+                        .get(x, y)
+                        .expect("conway: grid size changed unexpectedly between updates");
 
-                *new_cell = old_cell.apply_rule(rule, neighbours);
-            });
-
-        self.buffer.swap();
+                    *new_cell = old_cell.apply_rule(rule, neighbours);
+                });
+        });
     }
 
     fn cell(&self, x: isize, y: isize) -> Option<&Cell> {
@@ -214,8 +219,10 @@ impl Simulation for Conway {
 
                 if cell.is_alive() {
                     canvas.rect(pos, CELL, ALIVE_COLOR);
-                } else if cell.ghost.is_some_and(|ghost| ghost < 10) {
-                    let alpha = 1.0 - ((cell.ghost.unwrap() as f32 + 1.) / 5.);
+                } else if let Some(ghost) = cell.ghost
+                    && ghost < GHOST_FADE_TICKS
+                {
+                    let alpha = 1.0 - ((ghost + 1) as f32 / GHOST_FADE_TICKS as f32);
                     canvas.rect(pos, CELL, GHOST_COLOR.with_alpha(alpha));
                 }
             }
@@ -406,5 +413,53 @@ mod tests {
         let b = Conway::random(_CONWAY, 0.6, 20, 20, rng::seeded(7));
 
         assert_eq!(render(&a), render(&b));
+    }
+
+    #[test]
+    fn ghost_trails_never_draw_with_negative_alpha() {
+        // A lone cell dies immediately, leaving a trail behind it.
+        let mut sim = board(&["...", ".#.", "..."]);
+
+        for tick_count in 0..20 {
+            let mut canvas = RecordingCanvas::new();
+            sim.draw(&mut canvas);
+
+            for (_, _, color) in canvas.rects() {
+                assert!(
+                    (0.0..=1.0).contains(&color.a),
+                    "alpha {} after {tick_count} ticks — negative alpha subtracts \
+                     under source-alpha blending rather than fading out",
+                    color.a
+                );
+            }
+
+            tick(&mut sim, 1);
+        }
+    }
+
+    #[test]
+    fn a_ghost_trail_fades_monotonically_and_then_stops_drawing() {
+        let mut sim = board(&["...", ".#.", "..."]);
+        tick(&mut sim, 1);
+
+        let mut alphas = Vec::new();
+        for _ in 0..GHOST_FADE_TICKS + 3 {
+            let mut canvas = RecordingCanvas::new();
+            sim.draw(&mut canvas);
+            alphas.push(canvas.rects().map(|(_, _, c)| c.a).next());
+            tick(&mut sim, 1);
+        }
+
+        let drawn: Vec<f32> = alphas.iter().flatten().copied().collect();
+        assert!(!drawn.is_empty(), "the trail never appeared");
+        assert!(
+            drawn.windows(2).all(|w| w[0] > w[1]),
+            "trail did not fade monotonically: {drawn:?}"
+        );
+        assert_eq!(
+            None,
+            alphas.last().copied().flatten(),
+            "the trail should have stopped drawing by now"
+        );
     }
 }

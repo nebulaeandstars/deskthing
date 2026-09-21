@@ -24,7 +24,7 @@ mod simulations;
 mod traits;
 
 use component::ComponentFrame;
-use engine::{ImageBuffer, to_mq_color};
+use engine::{Audio, ImageBuffer, MacroquadAudio, SoundId, to_mq_color};
 use simulations::*;
 
 use grid::Grid;
@@ -52,13 +52,27 @@ const NUM_BOIDS: usize = 500;
 const COLORLIFE_PARTICLES: usize = 3000;
 const FLUID_PARTICLES: usize = 2000;
 
+/// A plain tank of fluid under gravity, with no obstacle and no margin — the
+/// whole simulated area is drawn, walls included. Useful for seeing what the
+/// solver is actually doing, which the Bad Apple version hides behind its
+/// margin.
+const TANK_PARTICLES: usize = 2000;
+const TANK_GRAVITY: f32 = 400.;
+
+const BADAPPLE_AUDIO_PATH: &str = "./resources/badapple/badapple.ogg";
+const SOUNDTRACK_VOLUME: f32 = 0.5;
+
 #[macroquad::main("window_config")]
 async fn main() {
     // generate_bitmaps().await;
     // generate_distance_fields().await;
     let bad_apple = load_distance_fields().await;
 
+    let mut audio = MacroquadAudio::new();
+    let soundtrack = load_soundtrack(&mut audio).await;
+
     let mut sim = default_sim(&bad_apple);
+    play_soundtrack(&mut audio, soundtrack);
 
     // One clock for the whole app. Simulations are told how much time passed;
     // none of them reads a clock itself.
@@ -71,7 +85,7 @@ async fn main() {
         let dt = now - last_frame;
         last_frame = now;
 
-        handle_sim_selection(&mut sim, &bad_apple);
+        handle_sim_selection(&mut sim, &bad_apple, &mut audio, soundtrack);
         update(&mut sim, dt);
         draw(&mut sim);
         next_frame().await;
@@ -87,9 +101,17 @@ fn window_config() -> Conf {
     }
 }
 
-// The asset pipeline. Run once by uncommenting the calls in `main`:
-// PNG frames -> bitmaps.bin -> distance_fields.bin. Both outputs are
-// gitignored, so a fresh clone has to regenerate them before the app will run.
+// The asset pipeline, all of it derived from the committed badapple.mp4 and
+// all of it gitignored, so a fresh clone has to regenerate it:
+//
+//   ffmpeg -i resources/badapple/badapple.mp4 \
+//     resources/badapple/frames/%05d.png
+//   ffmpeg -i resources/badapple/badapple.mp4 -vn -c:a libvorbis -q:a 4 \
+//     resources/badapple/badapple.ogg
+//
+// then uncomment the two generator calls in `main` and run once, which turns
+// the PNG frames into bitmaps.bin and then into distance_fields.bin. The
+// distance fields are required to start; the soundtrack is not.
 #[allow(dead_code)]
 async fn generate_bitmaps() {
     let mut out = File::create("./resources/badapple/bitmaps.bin").unwrap();
@@ -148,23 +170,83 @@ async fn load_bitmaps() -> Vec<BinaryBitmap> {
     obstacles
 }
 
+const DISTANCE_FIELDS_PATH: &str = "./resources/badapple/distance_fields.bin";
+
 async fn load_distance_fields() -> Arc<Vec<DistanceField>> {
-    println!("loading distance_fields.bin...");
-    let mut file = File::open("./resources/badapple/distance_fields.bin").unwrap();
+    println!("loading {DISTANCE_FIELDS_PATH}...");
+
+    let mut file = File::open(DISTANCE_FIELDS_PATH).unwrap_or_else(|error| {
+        panic!(
+            "could not open {DISTANCE_FIELDS_PATH}: {error}\n\
+             It is gitignored — regenerate it by uncommenting the generator \
+             calls in main, and run from the repository root."
+        )
+    });
+
     let mut distance_fields = Vec::new();
     let mut buffer = [0; BADAPPLE_X * BADAPPLE_Y * 4];
 
-    while let Ok(()) = file.read_exact(&mut buffer) {
+    loop {
+        match file.read_exact(&mut buffer) {
+            Ok(()) => {}
+            // A clean end of file is the only acceptable way out. Anything
+            // else — a truncated final frame, a read error — used to be
+            // indistinguishable from "done", leaving a silently short video.
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => panic!(
+                "failed reading {DISTANCE_FIELDS_PATH} after {} frames: {error}",
+                distance_fields.len()
+            ),
+        }
+
         let data: Vec<f32> = buffer
             .chunks(4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         let grid = Grid::new(data, BADAPPLE_X, BADAPPLE_Y);
-        let distance_field = DistanceField::new(grid);
-        distance_fields.push(distance_field);
+        distance_fields.push(DistanceField::new(grid));
     }
 
+    assert!(
+        !distance_fields.is_empty(),
+        "{DISTANCE_FIELDS_PATH} held no complete frames"
+    );
+
+    println!("loaded {} frames", distance_fields.len());
     Arc::new(distance_fields)
+}
+
+/// Loads the video's soundtrack, if it is there.
+///
+/// Unlike the distance fields this is optional: a missing soundtrack costs you
+/// the music, not the program. It is generated from the committed mp4 and
+/// gitignored, so a fresh clone will not have it until the pipeline is run.
+async fn load_soundtrack(audio: &mut MacroquadAudio) -> Option<SoundId> {
+    match audio.load(BADAPPLE_AUDIO_PATH).await {
+        Ok(sound) => Some(sound),
+        Err(error) => {
+            println!(
+                "no soundtrack ({BADAPPLE_AUDIO_PATH}: {error}); \
+                 regenerate it with:\n  \
+                 ffmpeg -i resources/badapple/badapple.mp4 -vn -c:a libvorbis \
+                 -q:a 4 {BADAPPLE_AUDIO_PATH}"
+            );
+            None
+        }
+    }
+}
+
+/// Starts the soundtrack from the top.
+///
+/// It loops, and the simulation's frame index is driven by accumulated real
+/// time, so the two stay together without either being told about the other.
+/// There is no way to read a sound's playback position, so this is a shared
+/// start rather than genuine synchronisation.
+fn play_soundtrack(audio: &mut MacroquadAudio, soundtrack: Option<SoundId>) {
+    if let Some(sound) = soundtrack {
+        audio.play(sound, true);
+        audio.set_volume(sound, SOUNDTRACK_VOLUME);
+    }
 }
 
 /// Bridges a macroquad-loaded image into the engine-agnostic buffer the
@@ -185,12 +267,32 @@ fn fluid_sim(video: &Arc<Vec<DistanceField>>) -> FluidSim {
     )
 }
 
+fn tank_sim() -> FluidSim {
+    FluidSim::init(
+        TANK_PARTICLES,
+        SIM_WIDTH,
+        SIM_HEIGHT,
+        Arc::new(Vec::new()),
+        rng::from_entropy(),
+    )
+    .with_gravity(TANK_GRAVITY)
+    .with_margin(0.)
+}
+
 fn default_sim(video: &Arc<Vec<DistanceField>>) -> ComponentFrame {
     ComponentFrame::relative_to_screen(fluid_sim(video), vec2(0.2, 0.2), vec2(0.6, 0.6))
 }
 
-fn handle_sim_selection(sim: &mut ComponentFrame, video: &Arc<Vec<DistanceField>>) {
+/// The soundtrack belongs to the video, so it plays only while the simulation
+/// showing that video is on screen.
+fn handle_sim_selection(
+    sim: &mut ComponentFrame,
+    video: &Arc<Vec<DistanceField>>,
+    audio: &mut MacroquadAudio,
+    soundtrack: Option<SoundId>,
+) {
     if is_key_pressed(KeyCode::A) {
+        audio.stop_all();
         sim.set_component(Conway::random(
             _CONWAY,
             0.6,
@@ -199,6 +301,7 @@ fn handle_sim_selection(sim: &mut ComponentFrame, video: &Arc<Vec<DistanceField>
             rng::from_entropy(),
         ));
     } else if is_key_pressed(KeyCode::B) {
+        audio.stop_all();
         sim.set_component(Boids::init(
             NUM_BOIDS,
             SIM_WIDTH,
@@ -206,6 +309,7 @@ fn handle_sim_selection(sim: &mut ComponentFrame, video: &Arc<Vec<DistanceField>
             rng::from_entropy(),
         ));
     } else if is_key_pressed(KeyCode::C) {
+        audio.stop_all();
         sim.set_component(Colorlife::init(
             COLORLIFE_PARTICLES,
             SIM_WIDTH,
@@ -213,7 +317,12 @@ fn handle_sim_selection(sim: &mut ComponentFrame, video: &Arc<Vec<DistanceField>
             rng::from_entropy(),
         ));
     } else if is_key_pressed(KeyCode::D) {
+        // Restarted from the top so the video and the music begin together.
         sim.set_component(fluid_sim(video));
+        play_soundtrack(audio, soundtrack);
+    } else if is_key_pressed(KeyCode::E) {
+        audio.stop_all();
+        sim.set_component(tank_sim());
     }
 }
 

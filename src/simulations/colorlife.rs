@@ -96,10 +96,14 @@ impl Creature {
     }
 
     pub fn clamp_speed(&mut self) {
-        if self.vel.length() < MIN_SPEED {
-            self.vel = self.vel.normalize() * MIN_SPEED;
-        } else if self.vel.length() > MAX_SPEED {
-            self.vel = self.vel.normalize() * MAX_SPEED;
+        // Compared squared so an in-range speed costs no square root.
+        let speed_squared = self.vel.length_squared();
+
+        if speed_squared > MAX_SPEED * MAX_SPEED {
+            self.vel *= MAX_SPEED / speed_squared.sqrt();
+        } else if MIN_SPEED > 0. && speed_squared < MIN_SPEED * MIN_SPEED {
+            // Unreachable while MIN_SPEED is zero, and folded away when it is.
+            self.vel = self.vel.normalize_or(Vec2::X) * MIN_SPEED;
         }
     }
 
@@ -251,34 +255,34 @@ impl Simulation for Colorlife {
             return;
         }
 
+        let sim_width = self.sim_width;
+        let sim_height = self.sim_height;
         self.update_chunks();
 
-        let (creatures, chunks) = (&mut self.creatures, &self.chunks);
+        let chunks = &self.chunks;
 
-        let (state, next) = creatures.states();
+        self.creatures.generate(|state, next| {
+            next.par_iter_mut()
+                .enumerate()
+                .for_each(|(i, new_creature)| {
+                    let old_creature = &state[i];
 
-        next.par_iter_mut()
-            .enumerate()
-            .for_each(|(i, new_creature)| {
-                let old_creature = &state[i];
+                    let neighbours = chunks
+                        .get_neighbourhood_at_pos(
+                            old_creature.pos,
+                            1,
+                            vec2(0., 0.),
+                            vec2(sim_width, sim_height),
+                        )
+                        .flat_map(|chunk| chunk.iter())
+                        .copied()
+                        .filter(|&j| j != i)
+                        .map(|j| &state[j]);
 
-                let neighbours = chunks
-                    .get_neighbourhood_at_pos(
-                        old_creature.pos,
-                        1,
-                        vec2(0., 0.),
-                        vec2(self.sim_width, self.sim_height),
-                    )
-                    .flat_map(|chunk| chunk.iter())
-                    .copied()
-                    .filter(|&j| j != i)
-                    .map(|j| &state[j]);
-
-                *new_creature =
-                    old_creature.update(deltatime, neighbours, self.sim_width, self.sim_height);
-            });
-
-        self.creatures.swap();
+                    *new_creature =
+                        old_creature.update(deltatime, neighbours, sim_width, sim_height);
+                });
+        });
     }
 }
 

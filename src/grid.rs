@@ -25,15 +25,26 @@ impl<T: Default> Grid<T> {
         Self::new(inner, columns, rows)
     }
 
-    /// Updates the dimensions of the grid.
+    /// Resizes the grid, filling any new cells with the default value.
+    ///
+    /// Cell *contents* are not carried across a change in `columns`: the
+    /// layout is row-major, so a different column count reinterprets every
+    /// index. Callers that care must repopulate afterwards.
     pub fn resize_with_defaults(&mut self, columns: usize, rows: usize) {
+        let len = columns * rows;
+
         self.columns = columns;
         self.rows = rows;
-        self.inner.reserve(columns * rows);
 
-        for _ in self.inner.len()..(columns * rows) {
+        // Both directions, or the length stops matching the dimensions and
+        // every subsequent index is wrong.
+        self.inner.truncate(len);
+        self.inner.reserve(len);
+        for _ in self.inner.len()..len {
             self.inner.push(T::default());
         }
+
+        debug_assert_eq!(len, self.inner.len());
     }
 }
 
@@ -467,5 +478,51 @@ mod tests {
         assert_eq!(Some((2, 0)), neighbours.next());
         assert_eq!(Some((2, 1)), neighbours.next());
         assert_eq!(None, neighbours.next());
+    }
+
+    #[test]
+    fn resizing_smaller_keeps_length_and_dimensions_in_step() {
+        let mut grid: Grid<i32> = Grid::with_defaults(4, 4);
+        grid.resize_with_defaults(2, 2);
+
+        assert_eq!(2, grid.columns());
+        assert_eq!(2, grid.rows());
+        assert_eq!(4, grid.size());
+        // Previously left at 16, silently breaking Grid's core invariant.
+        assert_eq!(4, grid.inner.len());
+    }
+
+    #[test]
+    fn resizing_larger_keeps_length_and_dimensions_in_step() {
+        let mut grid: Grid<i32> = Grid::with_defaults(2, 2);
+        grid.resize_with_defaults(4, 5);
+
+        assert_eq!(20, grid.size());
+        assert_eq!(20, grid.inner.len());
+    }
+
+    #[test]
+    fn resizing_to_the_same_dimensions_is_a_no_op() {
+        let mut grid = Grid::new(test_cells(), 2, 3);
+        grid.resize_with_defaults(2, 3);
+
+        assert!(test_cells().iter().eq(grid.iter()));
+    }
+
+    #[test]
+    fn a_resized_grid_can_still_be_indexed_everywhere() {
+        let mut grid: Grid<i32> = Grid::with_defaults(4, 4);
+        grid.resize_with_defaults(3, 2);
+
+        for row in 0..2 {
+            for column in 0..3 {
+                assert!(
+                    grid.get(column, row).is_some(),
+                    "({column}, {row}) unreachable after resize"
+                );
+            }
+        }
+        assert_eq!(None, grid.get(3, 0));
+        assert_eq!(None, grid.get(0, 2));
     }
 }

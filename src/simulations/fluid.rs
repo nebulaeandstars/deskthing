@@ -16,13 +16,58 @@ const MIN_SPEED: f32 = 0.0;
 const MAX_SPEED: f32 = 200.0;
 
 const SMOOTHING_RADIUS: f32 = 30.;
+const SMOOTHING_RADIUS_SQUARED: f32 = SMOOTHING_RADIUS * SMOOTHING_RADIUS;
 const REST_DENSITY: f32 = 2.;
-const VISCOSITY: f32 = 0.1;
+const VISCOSITY: f32 = 0.01;
+
+/// Damping applied to particles moving *toward* each other, as a fraction of
+/// their weighted mean approach speed.
+///
+/// This is Monaghan's artificial viscosity in spirit: it acts only on
+/// approaching pairs and is equal and opposite across each, so it removes
+/// relative motion without touching the fluid's bulk momentum. That is the
+/// distinction that matters — raising [`VISCOSITY`] would smooth away the
+/// travelling pressure fronts along with the rattle, whereas this leaves them
+/// intact because a front is bulk motion, not approach.
+const APPROACH_DAMPING: f32 = 1.5;
+
+/// How far from a wall a particle begins to feel it, and how hard it is
+/// pushed back at the wall itself.
+///
+/// Without this the only boundary handling is a hard position clamp, which
+/// snaps every arriving particle to exactly the same coordinate and builds a
+/// one-particle-thick sheet along each edge.
+const WALL_INFLUENCE: f32 = 12.;
+const WALL_STRENGTH: f32 = 1.2;
+
+/// How far from an obstacle's surface a particle begins to be held off it,
+/// and how hard.
+///
+/// Escaping an obstacle by exactly its own depth lands every particle on the
+/// surface itself, building a one-particle-thick shell around the silhouette
+/// with an evacuated band behind it. Holding them off across a range instead
+/// lets the fluid stack against an obstacle the way it stacks anywhere else.
+const OBSTACLE_INFLUENCE: f32 = 10.;
+const OBSTACLE_STRENGTH: f32 = 1.5;
 
 const DELTA_DAMPENING_FACTOR: f32 = 0.8;
-const VELOCITY_DAMPENING_FACTOR: f32 = 0.98;
+
+/// Largest position correction one solver iteration may apply, as a fraction
+/// of the smoothing radius.
+///
+/// Velocity is recovered as `(predicted - pos) / dt`, so the solver can
+/// manufacture arbitrarily large speeds out of a large correction: at a 16ms
+/// step, moving a particle three units is nearly 190 units per second. That is
+/// fine while the fluid has room, but the video's silhouette can leave it
+/// squeezed into a fraction of the frame, where the repulsion sums over three
+/// times the usual neighbours and every particle ends up pinned at the speed
+/// clamp, reversing each frame. Bounding the correction bounds that.
+const MAX_CORRECTION_FRACTION: f32 = 0.05;
+const VELOCITY_DAMPENING_FACTOR: f32 = 0.99;
 
 const PARTICLE_MASS: f32 = 1.;
+/// Default downward acceleration. The Bad Apple simulation runs at zero so the
+/// fluid stays spread across the frame; a plain tank wants real gravity.
 const GRAVITY: f32 = 0.;
 
 const VIDEO_FRAMERATE: f32 = 30.;
@@ -37,19 +82,34 @@ const OBSTACLE_BORDER: f32 = SMOOTHING_RADIUS;
 // Large "infine" number to avoid NaNs
 const INF: f32 = 1e20;
 
+/// Deliberately small. The solver's inner loops read only `predicted_pos`, so
+/// every byte here is cache bandwidth spent to reach it — a particle's index is
+/// its position in the vector and does not need storing.
+/// How hard a wall pushes a particle sitting `distance` away from it.
+///
+/// Quadratic in the depth into the band, so a particle decelerates into a wall
+/// over [`WALL_INFLUENCE`] units rather than being stopped dead at a plane.
+/// The hard clamp in [`FluidParticle::bounce`] remains as a backstop, but with
+/// this in place it should rarely be what stops anything.
+fn wall_push(distance: f32) -> f32 {
+    if distance >= WALL_INFLUENCE {
+        return 0.;
+    }
+
+    let depth = 1. - distance.max(0.) / WALL_INFLUENCE;
+    WALL_STRENGTH * depth * depth
+}
+
 #[derive(Clone, Debug)]
 pub struct FluidParticle {
-    index: usize,
     pos: Vec2,
     vel: Vec2,
     predicted_pos: Vec2,
 }
 
 impl FluidParticle {
-    #[allow(unused)]
-    pub fn new(index: usize, x: f32, y: f32) -> Self {
+    pub fn new(x: f32, y: f32) -> Self {
         Self {
-            index,
             pos: Vec2::new(x, y),
             vel: Vec2::new(0., 0.),
             predicted_pos: Vec2::new(x, y),
@@ -57,10 +117,15 @@ impl FluidParticle {
     }
 
     pub fn clamp_speed(&mut self) {
-        if self.vel.length() < MIN_SPEED {
-            self.vel = self.vel.normalize() * MIN_SPEED;
-        } else if self.vel.length() > MAX_SPEED {
-            self.vel = self.vel.normalize() * MAX_SPEED;
+        // Compared squared so the common case — a speed already within range —
+        // costs no square root at all. `normalize` would be a third.
+        let speed_squared = self.vel.length_squared();
+
+        if speed_squared > MAX_SPEED * MAX_SPEED {
+            self.vel *= MAX_SPEED / speed_squared.sqrt();
+        } else if MIN_SPEED > 0. && speed_squared < MIN_SPEED * MIN_SPEED {
+            // Unreachable while MIN_SPEED is zero, and folded away when it is.
+            self.vel *= MIN_SPEED / speed_squared.sqrt();
         }
     }
 
@@ -84,8 +149,8 @@ impl FluidParticle {
         }
     }
 
-    pub fn apply_gravity(&mut self, deltatime: Duration) {
-        self.vel += Vec2::new(0., GRAVITY) * deltatime.as_secs_f32();
+    pub fn apply_gravity(&mut self, gravity: f32, deltatime: Duration) {
+        self.vel += Vec2::new(0., gravity) * deltatime.as_secs_f32();
     }
 
     pub fn reset_predicted_pos(&mut self, deltatime: Duration) {
@@ -98,8 +163,11 @@ impl FluidParticle {
         self.clamp_speed();
     }
 
+    /// Applies the combined velocity correction from
+    /// [`FluidSim::calculate_viscosity_forces`]. The individual coefficients
+    /// are folded in there, since two terms are being summed.
     pub fn apply_viscosity(&mut self, viscosity_force: Vec2) {
-        self.vel += viscosity_force * VISCOSITY;
+        self.vel += viscosity_force;
         self.clamp_speed();
     }
 
@@ -119,7 +187,18 @@ pub struct FluidSim {
     lambdas: Vec<f32>,
     position_deltas: Vec<Vec2>,
     viscosity_forces: Vec<Vec2>,
+    /// Scratch for the anti-overlap jitter, kept across frames so the solver
+    /// does not allocate per update.
+    nudges: Vec<Vec2>,
     chunks: Grid<Vec<usize>>,
+    /// Downward acceleration, per simulation rather than global.
+    gravity: f32,
+    /// How much of the sim area sits outside the drawn region.
+    ///
+    /// The Bad Apple simulation keeps a margin so fluid can travel around the
+    /// outside of the video and reach the far side; a plain tank draws its
+    /// whole area, walls included.
+    margin: f32,
     rng: Rng,
     /// Time since the simulation started, accumulated from the `dt` handed to
     /// `update`. The simulation never reads a clock itself.
@@ -163,7 +242,10 @@ impl FluidSim {
             lambdas: vec![0.; num_particles],
             position_deltas: vec![Vec2::ZERO; num_particles],
             viscosity_forces: vec![Vec2::ZERO; num_particles],
+            nudges: vec![Vec2::ZERO; num_particles],
             chunks: Grid::with_defaults(columns, rows),
+            gravity: GRAVITY,
+            margin: OBSTACLE_BORDER,
             rng,
             elapsed: Duration::ZERO,
             current_frame: 0,
@@ -185,13 +267,28 @@ impl FluidSim {
     ) -> Self {
         let mut particles = Vec::with_capacity(num_particles);
 
-        for i in 0..num_particles {
+        for _ in 0..num_particles {
             let x = rng.random_range(10.0..sim_width - 10.);
             let y = rng.random_range(sim_height * 0.25 - 10.0..sim_height - 10.);
-            particles.push(FluidParticle::new(i, x, y));
+            particles.push(FluidParticle::new(x, y));
         }
 
         Self::new(particles, sim_width, sim_height, video, rng)
+    }
+
+    /// Sets the downward acceleration.
+    #[must_use]
+    pub fn with_gravity(mut self, gravity: f32) -> Self {
+        self.gravity = gravity;
+        self
+    }
+
+    /// Sets how much of the sim area is kept outside the drawn region. Zero
+    /// draws the whole tank, walls included.
+    #[must_use]
+    pub fn with_margin(mut self, margin: f32) -> Self {
+        self.margin = margin;
+        self
     }
 
     fn update_chunks(&mut self) {
@@ -209,20 +306,21 @@ impl FluidSim {
             .resize_with_defaults(columns as usize, rows as usize);
 
         // Register all particles within their current chunks.
-        for particle in &self.particles {
+        for (index, particle) in self.particles.iter().enumerate() {
             if let Some(chunk) = self.chunks.get_mut_by_pos(
                 particle.predicted_pos,
                 vec2(0., 0.),
                 vec2(self.sim_width, self.sim_height),
             ) {
-                chunk.push(particle.index);
+                chunk.push(index);
             }
         }
     }
 
     fn reset_predicted_positions(&mut self, deltatime: Duration) {
+        let gravity = self.gravity;
         self.particles.par_iter_mut().for_each(|particle| {
-            particle.apply_gravity(deltatime);
+            particle.apply_gravity(gravity, deltatime);
             particle.reset_predicted_pos(deltatime);
         });
     }
@@ -269,10 +367,10 @@ impl FluidSim {
     /// Where the video obstacle sits within the sim, in sim coordinates.
     fn video_bounds(&self) -> (Vec2, Vec2) {
         (
-            vec2(OBSTACLE_BORDER, OBSTACLE_BORDER),
+            vec2(self.margin, self.margin),
             vec2(
-                self.sim_width - OBSTACLE_BORDER * 2.,
-                self.sim_height - OBSTACLE_BORDER * 2.,
+                self.sim_width - self.margin * 2.,
+                self.sim_height - self.margin * 2.,
             ),
         )
     }
@@ -301,14 +399,16 @@ impl FluidSim {
                     vec2(self.sim_width, self.sim_height),
                 ) {
                     for j in chunk.iter().copied() {
-                        let displacement = particles[j].predicted_pos - particles[i].predicted_pos;
+                        let displacement = particles[j].predicted_pos - position;
                         let distance_squared = displacement.length_squared();
 
-                        if distance_squared < SMOOTHING_RADIUS * SMOOTHING_RADIUS {
-                            let distance = distance_squared.sqrt();
-                            local_density += PARTICLE_MASS * Self::smoothing_kernel(distance);
+                        if distance_squared < SMOOTHING_RADIUS_SQUARED {
+                            local_density +=
+                                PARTICLE_MASS * Self::smoothing_kernel_sq(distance_squared);
 
-                            let gradient = Self::pressure_gradient(displacement) / REST_DENSITY;
+                            let gradient =
+                                Self::pressure_gradient(displacement, distance_squared.sqrt())
+                                    / REST_DENSITY;
                             gradient_sum += gradient.length_squared();
                             self_gradient += gradient;
                         }
@@ -335,8 +435,19 @@ impl FluidSim {
             .par_iter_mut()
             .enumerate()
             .for_each(|(i, delta)| {
+                // The reference value the tensile correction is scaled against,
+                // at 0.3 of the smoothing radius. Loop-invariant, so it is
+                // folded at compile time rather than recomputed per pair.
+                // Held as a reciprocal: this is a per-pair operation in the
+                // solver's innermost loop, and it is not a power of two, so
+                // the compiler cannot turn the division into a multiply for us.
+                const S_CORR_SCALE: f32 =
+                    1.0 / FluidSim::smoothing_kernel_sq(0.09 * SMOOTHING_RADIUS_SQUARED);
+
                 *delta = Vec2::ZERO;
                 let position = particles[i].predicted_pos;
+                let lambda_i = lambdas[i];
+                let mut accumulated = Vec2::ZERO;
 
                 for chunk in chunks.get_neighbourhood_at_pos(
                     position,
@@ -348,57 +459,100 @@ impl FluidSim {
                         if i == j {
                             continue;
                         }
+
                         let displacement = particles[j].predicted_pos - position;
+                        let distance_squared = displacement.length_squared();
+
+                        // The chunk neighbourhood is a 3x3 square of
+                        // radius-sized cells, so most of what it returns lies
+                        // outside the kernel and contributes nothing. Rejecting
+                        // those on the squared distance skips the square root
+                        // and the correction term entirely.
+                        if distance_squared >= SMOOTHING_RADIUS_SQUARED {
+                            continue;
+                        }
 
                         let s_corr = -0.001
-                            * (Self::smoothing_kernel(displacement.length())
-                                / Self::smoothing_kernel(0.3 * SMOOTHING_RADIUS))
-                            .powi(4);
+                            * (Self::smoothing_kernel_sq(distance_squared) * S_CORR_SCALE).powi(4);
 
-                        let gradient = Self::pressure_gradient(displacement);
-                        *delta += ((lambdas[i] + lambdas[j] + s_corr) * gradient) / REST_DENSITY;
+                        let gradient =
+                            Self::pressure_gradient(displacement, distance_squared.sqrt());
+                        accumulated += (lambda_i + lambdas[j] + s_corr) * gradient;
+                    }
+                }
+
+                let correction = accumulated / REST_DENSITY;
+
+                // Bounded in magnitude, keeping direction.
+                const LIMIT: f32 = MAX_CORRECTION_FRACTION * SMOOTHING_RADIUS;
+                let magnitude = correction.length();
+
+                *delta = if magnitude > LIMIT {
+                    correction * (LIMIT / magnitude)
+                } else {
+                    correction
+                };
+            });
+    }
+
+    /// Applies this iteration's position corrections and then pushes anything
+    /// that landed inside the obstacle back out.
+    ///
+    /// The two are one pass because both are independent per-particle updates
+    /// running back to back, and this is the innermost loop of the solver —
+    /// splitting them costs an extra parallel dispatch on every iteration.
+    fn apply_deltas_and_solve_obstacle(&mut self) {
+        let obstacle = self.video.get(self.current_frame);
+
+        let (field_pos, field_size) = self.video_bounds();
+        let (sim_width, sim_height) = (self.sim_width, self.sim_height);
+
+        // `video`, `position_deltas` and `particles` are borrowed as disjoint
+        // fields, so the distance field is shared by reference rather than
+        // deep-copied once per solver iteration. Zipping rather than indexing
+        // by a counter keeps the deltas bounds-check free.
+        self.particles
+            .par_iter_mut()
+            .zip(self.position_deltas.par_iter())
+            .for_each(|(particle, delta)| {
+                particle.predicted_pos += *delta * DELTA_DAMPENING_FACTOR;
+
+                // Walls push back over a band instead of stopping particles
+                // dead at a plane, which is what built the sheet along each
+                // edge and the empty gap behind it.
+                let pos = particle.predicted_pos;
+                particle.predicted_pos += vec2(
+                    wall_push(pos.x) - wall_push(sim_width - pos.x),
+                    wall_push(pos.y) - wall_push(sim_height - pos.y),
+                );
+
+                let Some(distance_field) = obstacle else {
+                    return;
+                };
+
+                let escape_displacement = distance_field.surface_displacement(
+                    particle.predicted_pos,
+                    field_pos,
+                    field_size,
+                    OBSTACLE_INFLUENCE,
+                    OBSTACLE_STRENGTH,
+                );
+
+                if let Some(displacement) = escape_displacement
+                    && displacement.is_finite()
+                {
+                    particle.predicted_pos += displacement;
+
+                    // Zero is reachable: the distance field's gradient vanishes
+                    // along the medial axis of a solid region, so there is no
+                    // escape direction to reflect the velocity against.
+                    let direction = displacement.normalize_or_zero();
+                    let normal_speed = particle.vel.dot(direction);
+                    if normal_speed < 0.0 {
+                        particle.vel -= direction * (1.0 + RESTITUTION_COEFFICIENT) * normal_speed;
                     }
                 }
             });
-    }
-
-    fn apply_position_deltas(&mut self) {
-        let position_deltas = &self.position_deltas;
-        self.particles
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(i, particle)| {
-                particle.predicted_pos += position_deltas[i] * DELTA_DAMPENING_FACTOR;
-            });
-    }
-
-    fn solve_video_frame_obstacle(&mut self) {
-        let Some(distance_field) = self.video.get(self.current_frame) else {
-            return;
-        };
-
-        let (field_pos, field_size) = self.video_bounds();
-
-        // `video` and `particles` are borrowed as disjoint fields, so the
-        // distance field is shared by reference rather than deep-copied once
-        // per solver iteration.
-
-        self.particles.par_iter_mut().for_each(|particle| {
-            let escape_displacement =
-                distance_field.escape_displacement(particle.predicted_pos, field_pos, field_size);
-
-            if let Some(displacement) = escape_displacement
-                && displacement.is_finite()
-            {
-                particle.predicted_pos += displacement;
-
-                let direction = displacement.normalize();
-                let normal_speed = particle.vel.dot(direction);
-                if normal_speed < 0.0 {
-                    particle.vel -= direction * (1.0 + RESTITUTION_COEFFICIENT) * normal_speed;
-                }
-            }
-        });
     }
 
     fn calculate_viscosity_forces(&mut self) {
@@ -407,15 +561,15 @@ impl FluidSim {
         // Drawn up front rather than inside the loop: the generator is not
         // shareable across rayon's threads, and pre-drawing keeps a seeded run
         // reproducible regardless of how the work happens to be scheduled.
-        let nudges: Vec<Vec2> = (0..self.particles.len())
-            .map(|_| {
-                vec2(
-                    self.rng.random_range(-EPSILON..EPSILON),
-                    self.rng.random_range(-EPSILON..EPSILON),
-                )
-            })
-            .collect();
+        let rng = &mut self.rng;
+        for nudge in &mut self.nudges {
+            *nudge = vec2(
+                rng.random_range(-EPSILON..EPSILON),
+                rng.random_range(-EPSILON..EPSILON),
+            );
+        }
 
+        let nudges = &self.nudges;
         let particles = &self.particles;
         let chunks = &self.chunks;
 
@@ -424,10 +578,13 @@ impl FluidSim {
             .enumerate()
             .for_each(|(i, viscosity)| {
                 let position = particles[i].predicted_pos;
+                let own_pos = particles[i].pos;
+                let own_vel = particles[i].vel;
                 let mut viscosity_force = Vec2::ZERO;
 
                 let mut weighted_velocity = Vec2::ZERO;
                 let mut sum_of_weights = 0.0;
+                let mut approach = Vec2::ZERO;
 
                 for chunk in chunks.get_neighbourhood_at_pos(
                     position,
@@ -436,21 +593,29 @@ impl FluidSim {
                     vec2(self.sim_width, self.sim_height),
                 ) {
                     for j in chunk.iter().copied() {
-                        let displacement = particles[j].pos - particles[i].pos;
+                        if i == j {
+                            continue;
+                        }
+
+                        let displacement = particles[j].pos - own_pos;
                         let distance_squared = displacement.length_squared();
 
-                        if i != j {
-                            // Nudge overlapping particles
-                            if distance_squared == 0. {
-                                weighted_velocity += nudges[i];
-                            } else {
-                                let distance = distance_squared.sqrt();
+                        // Nudge overlapping particles
+                        if distance_squared == 0. {
+                            weighted_velocity += nudges[i];
+                        } else if distance_squared < SMOOTHING_RADIUS_SQUARED {
+                            let w = Self::smoothing_kernel_sq(distance_squared);
+                            weighted_velocity += particles[j].vel * w;
+                            sum_of_weights += w;
 
-                                if distance < SMOOTHING_RADIUS {
-                                    let w = Self::smoothing_kernel(distance);
-                                    weighted_velocity += particles[j].vel * w;
-                                    sum_of_weights += w;
-                                }
+                            // Only the component of relative velocity along
+                            // the line between the pair, and only when it is
+                            // closing. Receding pairs are left alone, so this
+                            // cannot suck particles together.
+                            let direction = displacement / distance_squared.sqrt();
+                            let closing = (particles[j].vel - own_vel).dot(direction);
+                            if closing > 0. {
+                                approach += direction * (closing * w);
                             }
                         }
                     }
@@ -458,27 +623,20 @@ impl FluidSim {
 
                 if sum_of_weights > 0.0 {
                     let average_velocity = weighted_velocity / sum_of_weights;
-                    viscosity_force = average_velocity - particles[i].vel;
+                    viscosity_force = (average_velocity - own_vel) * VISCOSITY;
+                    viscosity_force += (approach / sum_of_weights) * APPROACH_DAMPING;
                 }
 
                 *viscosity = viscosity_force;
             });
     }
 
-    fn smoothing_kernel(distance: f32) -> f32 {
-        Self::poly6_smoothing_kernel(distance)
-    }
-
-    #[allow(unused)]
-    fn quadratic_smoothing_kernel(distance: f32) -> f32 {
-        if distance >= SMOOTHING_RADIUS {
-            return 0.0;
-        }
-
-        (1.0 - distance / SMOOTHING_RADIUS).powi(2)
-    }
-
-    fn poly6_smoothing_kernel(distance: f32) -> f32 {
+    /// The poly6 kernel, in terms of squared distance.
+    ///
+    /// This is the natural form: poly6 is a polynomial in `d²`, so taking a
+    /// square root at the call site only to square it again here is wasted
+    /// work. Every caller already has the squared distance to hand.
+    const fn smoothing_kernel_sq(distance_squared: f32) -> f32 {
         // Can't use f32::powi(8) here as it is not const
         const SMOOTHING_RADIUS_POW8: f32 = SMOOTHING_RADIUS
             * SMOOTHING_RADIUS
@@ -491,18 +649,18 @@ impl FluidSim {
 
         const SMOOTHING_CONSTANT: f32 = 4.0 / (std::f32::consts::PI * SMOOTHING_RADIUS_POW8);
 
-        if distance >= SMOOTHING_RADIUS {
+        if distance_squared >= SMOOTHING_RADIUS_SQUARED {
             return 0.0;
         }
 
-        let smoothing_radius_squared = SMOOTHING_RADIUS.powi(2);
-        let x = smoothing_radius_squared - distance.powi(2);
+        let x = SMOOTHING_RADIUS_SQUARED - distance_squared;
 
-        SMOOTHING_CONSTANT * x.powi(3)
+        SMOOTHING_CONSTANT * x * x * x
     }
 
-    fn pressure_gradient(displacement: Vec2) -> Vec2 {
-        let distance = displacement.length();
+    /// Takes `distance` rather than recomputing it: every call site has
+    /// already paid for the square root.
+    fn pressure_gradient(displacement: Vec2, distance: f32) -> Vec2 {
         if distance == 0.0 || distance >= SMOOTHING_RADIUS {
             return Vec2::ZERO;
         }
@@ -600,8 +758,7 @@ impl Simulation for FluidSim {
         for _iteration in 1..=ITERATIONS_PER_UPDATE {
             self.update_densities();
             self.update_position_deltas();
-            self.apply_position_deltas();
-            self.solve_video_frame_obstacle();
+            self.apply_deltas_and_solve_obstacle();
         }
 
         self.particles
@@ -610,14 +767,17 @@ impl Simulation for FluidSim {
 
         self.calculate_viscosity_forces();
 
+        // Viscosity and the position commit are one pass: both are independent
+        // per-particle updates, and the commit has to happen after viscosity
+        // anyway.
+        let (sim_width, sim_height) = (self.sim_width, self.sim_height);
         self.particles
             .par_iter_mut()
-            .enumerate()
-            .for_each(|(i, particle)| particle.apply_viscosity(self.viscosity_forces[i]));
-
-        self.particles
-            .par_iter_mut()
-            .for_each(|particle| particle.commit_new_position(self.sim_width, self.sim_height));
+            .zip(self.viscosity_forces.par_iter())
+            .for_each(|(particle, viscosity)| {
+                particle.apply_viscosity(*viscosity);
+                particle.commit_new_position(sim_width, sim_height);
+            });
     }
 
     fn draw(&mut self, canvas: &mut dyn Canvas) {
@@ -740,11 +900,23 @@ impl DistanceField {
         Self { grid }
     }
 
+    /// The signed distance at `pos`, in grid cells. Negative inside.
+    ///
+    /// Anywhere off the grid counts as far *outside* the obstacle. Returning
+    /// zero there — the value that means "exactly on the surface" — makes
+    /// every particle beyond the field's coverage look like it is touching
+    /// the silhouette.
     pub fn sample(&self, pos: Vec2) -> f32 {
-        *self
-            .grid
+        self.grid
             .get(pos.x.floor() as isize, pos.y.floor() as isize)
-            .unwrap_or(&0.)
+            .copied()
+            .unwrap_or_else(|| self.beyond_the_field())
+    }
+
+    /// A distance larger than any the grid can hold, but finite, so that
+    /// differencing it for a gradient cannot produce a NaN.
+    fn beyond_the_field(&self) -> f32 {
+        (self.grid.columns() + self.grid.rows()) as f32
     }
 
     pub fn gradient(&self, pos: Vec2) -> Vec2 {
@@ -766,6 +938,25 @@ impl DistanceField {
         field_pos: Vec2,
         field_size: Vec2,
     ) -> Option<Vec2> {
+        self.surface_displacement(pos, field_pos, field_size, 0., 0.)
+    }
+
+    /// Displacement that holds a particle away from the surface rather than
+    /// merely outside it.
+    ///
+    /// `influence` is how far out the obstacle is felt and `standoff` how hard
+    /// it pushes at the surface. With both zero this is a bare escape: a
+    /// particle inside is moved out by exactly its own depth, which lands it
+    /// on the surface. Every particle treated that way lands on the *same*
+    /// surface, which is how a shell forms.
+    pub fn surface_displacement(
+        &self,
+        pos: Vec2,
+        field_pos: Vec2,
+        field_size: Vec2,
+        influence: f32,
+        standoff: f32,
+    ) -> Option<Vec2> {
         let pixel_width = field_size.x / self.grid.columns() as f32;
         let pixel_height = field_size.y / self.grid.rows() as f32;
 
@@ -774,7 +965,22 @@ impl DistanceField {
         relative_pos.y /= pixel_height;
 
         let distance = self.sample(relative_pos);
-        if distance >= 0. {
+        if distance >= influence {
+            return None;
+        }
+
+        // Inside, the depth has to be undone before anything else. Outside,
+        // the push falls away quadratically across the band, so particles come
+        // to rest spread through it rather than all at its floor.
+        let escape = (-distance).max(0.);
+        let push = if influence > 0. {
+            let depth = 1. - distance.max(0.) / influence;
+            standoff * depth * depth
+        } else {
+            0.
+        };
+
+        if escape + push <= 0. {
             return None;
         }
 
@@ -782,7 +988,7 @@ impl DistanceField {
         gradient.x *= pixel_width;
         gradient.y *= pixel_height;
 
-        Some(gradient * -distance)
+        Some(gradient * (escape + push))
     }
 
     fn edt_from_bitmap(bitmap: &BinaryBitmap) -> Self {
@@ -1212,10 +1418,10 @@ mod tests {
         let centre = vec2(TEST_WIDTH / 2., TEST_HEIGHT / 2.);
 
         let particles = (0..TEST_PARTICLES)
-            .map(|i| {
+            .map(|_| {
                 let jitter = vec2(rng.random_range(-2.0..2.0), rng.random_range(-2.0..2.0));
                 let pos = centre + jitter;
-                FluidParticle::new(i, pos.x, pos.y)
+                FluidParticle::new(pos.x, pos.y)
             })
             .collect();
 
@@ -1244,7 +1450,7 @@ mod tests {
     #[test]
     fn perfectly_coincident_particles_stay_numerically_sound() {
         let particles = (0..8)
-            .map(|i| FluidParticle::new(i, TEST_WIDTH / 2., TEST_HEIGHT / 2.))
+            .map(|_| FluidParticle::new(TEST_WIDTH / 2., TEST_HEIGHT / 2.))
             .collect();
 
         let mut sim = FluidSim::new(
@@ -1271,8 +1477,8 @@ mod tests {
 
         // Two particles at opposite corners have no neighbours at all.
         let sparse_particles = vec![
-            FluidParticle::new(0, 5., 5.),
-            FluidParticle::new(1, TEST_WIDTH - 5., TEST_HEIGHT - 5.),
+            FluidParticle::new(5., 5.),
+            FluidParticle::new(TEST_WIDTH - 5., TEST_HEIGHT - 5.),
         ];
         let mut sparse = FluidSim::new(
             sparse_particles,
@@ -1666,8 +1872,7 @@ mod tests {
     fn sim_from(positions: &[Vec2]) -> FluidSim {
         let particles = positions
             .iter()
-            .enumerate()
-            .map(|(i, p)| FluidParticle::new(i, p.x, p.y))
+            .map(|p| FluidParticle::new(p.x, p.y))
             .collect();
 
         FluidSim::new(
@@ -1748,5 +1953,431 @@ mod tests {
                 "  {neighbours:>2} neighbours: {after_one:>12.3e} after 1 step, {after_thirty:>10.4} after 30"
             );
         }
+    }
+
+    /// The density kernel must integrate to 1 over the plane, or "density"
+    /// is not in units of mass per unit area and `REST_DENSITY` cannot be
+    /// reasoned about. This is the property that pins poly6's 4/(pi h^8)
+    /// coefficient to two dimensions rather than three.
+    #[test]
+    fn the_density_kernel_is_normalised_for_two_dimensions() {
+        let h = SMOOTHING_RADIUS;
+        let steps = 20_000;
+
+        let integral: f64 = (0..steps)
+            .map(|k| {
+                let r = (k as f32 + 0.5) / steps as f32 * h;
+                let dr = h / steps as f32;
+                f64::from(FluidSim::smoothing_kernel_sq(r * r))
+                    * f64::from(2.0 * std::f32::consts::PI * r * dr)
+            })
+            .sum();
+
+        assert!(
+            (integral - 1.0).abs() < 1e-3,
+            "poly6 integrates to {integral}, not 1"
+        );
+    }
+
+    #[test]
+    fn the_density_kernel_is_zero_beyond_the_smoothing_radius() {
+        assert_eq!(0., FluidSim::smoothing_kernel_sq(SMOOTHING_RADIUS_SQUARED));
+        assert_eq!(
+            0.,
+            FluidSim::smoothing_kernel_sq(SMOOTHING_RADIUS_SQUARED * 4.)
+        );
+        assert!(FluidSim::smoothing_kernel_sq(0.) > 0.);
+    }
+
+    #[test]
+    fn the_density_kernel_decreases_with_distance() {
+        let h = SMOOTHING_RADIUS;
+        let sample = |f: f32| FluidSim::smoothing_kernel_sq((f * h) * (f * h));
+
+        assert!(sample(0.) > sample(0.25));
+        assert!(sample(0.25) > sample(0.5));
+        assert!(sample(0.5) > sample(0.75));
+        assert!(sample(0.75) > sample(0.99));
+    }
+
+    /// The gradient points from the sampled particle toward its neighbour and
+    /// vanishes at the smoothing radius. Sign matters: it is what makes a
+    /// negative lambda (compression) push particles apart.
+    #[test]
+    fn the_pressure_gradient_points_at_the_neighbour_and_vanishes_at_the_radius() {
+        let toward = FluidSim::pressure_gradient(Vec2::X * 5., 5.);
+        assert!(toward.x > 0., "gradient should point toward the neighbour");
+        assert_eq!(0., toward.y);
+
+        assert_eq!(
+            Vec2::ZERO,
+            FluidSim::pressure_gradient(Vec2::X * SMOOTHING_RADIUS, SMOOTHING_RADIUS)
+        );
+        assert_eq!(Vec2::ZERO, FluidSim::pressure_gradient(Vec2::ZERO, 0.));
+
+        // Magnitude falls off as (h - d)^2.
+        let near = FluidSim::pressure_gradient(Vec2::X * 1., 1.).length();
+        let far = FluidSim::pressure_gradient(Vec2::X * 20., 20.).length();
+        assert!(near > far);
+    }
+
+    // ---- boundary handling -----------------------------------------------
+
+    #[test]
+    fn wall_push_grows_as_the_wall_approaches() {
+        assert_eq!(0., wall_push(WALL_INFLUENCE));
+        assert_eq!(0., wall_push(WALL_INFLUENCE * 2.));
+
+        let at_wall = wall_push(0.);
+        assert!(at_wall > 0.);
+        assert!(at_wall > wall_push(WALL_INFLUENCE / 2.));
+        assert!(wall_push(WALL_INFLUENCE / 2.) > wall_push(WALL_INFLUENCE * 0.9));
+
+        // A particle driven past the wall is pushed no harder than one at it,
+        // so overshoot cannot launch anything.
+        assert_eq!(at_wall, wall_push(-50.));
+    }
+
+    /// Particles must not pile into a sheet against the walls.
+    ///
+    /// A hard position clamp snaps every arriving particle to exactly the same
+    /// coordinate, which builds a one-particle-thick layer at several times
+    /// bulk density with an evacuated band behind it — the fluid crystallising
+    /// rather than flowing. The tell is a density profile that oscillates with
+    /// distance from the wall instead of settling toward bulk.
+    #[test]
+    fn the_walls_do_not_build_a_sheet() {
+        // Needs the density the app actually runs at: it takes interior
+        // pressure to drive particles into a wall hard enough to stack.
+        const COUNT: usize = 800;
+        const WIDTH: f32 = 240.;
+        const HEIGHT: f32 = 240.;
+        const BAND: f32 = 5.;
+
+        let mut sim = FluidSim::init(COUNT, WIDTH, HEIGHT, Arc::new(Vec::new()), rng::seeded(41));
+        step(&mut sim, 400);
+
+        let bulk = COUNT as f32 / (WIDTH * HEIGHT);
+        let density_at = |band: usize| {
+            let (lo, hi) = (band as f32 * BAND, (band + 1) as f32 * BAND);
+            let count = sim
+                .particles
+                .iter()
+                .filter(|p| {
+                    let wall = p
+                        .pos
+                        .x
+                        .min(WIDTH - p.pos.x)
+                        .min(p.pos.y)
+                        .min(HEIGHT - p.pos.y);
+                    wall >= lo && wall < hi
+                })
+                .count();
+
+            let area = (WIDTH - 2. * lo).max(0.) * (HEIGHT - 2. * lo).max(0.)
+                - (WIDTH - 2. * hi).max(0.) * (HEIGHT - 2. * hi).max(0.);
+
+            (count as f32 / area) / bulk
+        };
+
+        let profile: Vec<f32> = (0..4).map(density_at).collect();
+
+        for (band, density) in profile.iter().enumerate() {
+            assert!(
+                *density < 2.2,
+                "band {band} sits at {density:.2}x bulk density: {profile:?}"
+            );
+        }
+
+        // No evacuated band sitting behind a packed one.
+        assert!(
+            profile[1] > 0.2 || profile[0] < 0.2,
+            "an empty band sits behind the boundary layer: {profile:?}"
+        );
+    }
+
+    // ---- approach damping ------------------------------------------------
+
+    /// The damping must remove *relative* motion only. This is what lets it
+    /// calm compression without flattening the travelling pressure fronts —
+    /// a front is bulk motion, and bulk motion has no approach component.
+    #[test]
+    fn damping_ignores_fluid_moving_as_one_body() {
+        let mut sim = sim();
+        step(&mut sim, 60);
+
+        // Every particle moving identically: no pair is closing.
+        for particle in &mut sim.particles {
+            particle.vel = vec2(50., -20.);
+        }
+
+        sim.update_chunks();
+        sim.calculate_viscosity_forces();
+
+        let strongest = sim
+            .viscosity_forces
+            .iter()
+            .map(|f| f.length())
+            .fold(0., f32::max);
+
+        assert!(
+            strongest < 1e-3,
+            "uniform motion produced a correction of {strongest}"
+        );
+    }
+
+    #[test]
+    fn damping_opposes_particles_closing_on_each_other() {
+        // Two particles a comfortable fraction of a radius apart, converging.
+        let gap = SMOOTHING_RADIUS / 3.;
+        let centre = vec2(TEST_WIDTH / 2., TEST_HEIGHT / 2.);
+
+        let mut sim = FluidSim::new(
+            vec![
+                FluidParticle::new(centre.x - gap, centre.y),
+                FluidParticle::new(centre.x + gap, centre.y),
+            ],
+            TEST_WIDTH,
+            TEST_HEIGHT,
+            Arc::new(Vec::new()),
+            rng::seeded(5),
+        );
+
+        sim.particles[0].vel = vec2(60., 0.);
+        sim.particles[1].vel = vec2(-60., 0.);
+
+        sim.update_chunks();
+        sim.calculate_viscosity_forces();
+
+        // Each correction should oppose that particle's own motion.
+        assert!(
+            sim.viscosity_forces[0].x < 0.,
+            "left particle was not slowed: {:?}",
+            sim.viscosity_forces[0]
+        );
+        assert!(
+            sim.viscosity_forces[1].x > 0.,
+            "right particle was not slowed: {:?}",
+            sim.viscosity_forces[1]
+        );
+    }
+
+    /// A push must travel through the fluid as a front: still visibly moving
+    /// part of it a third of a second later, but never the whole body at once.
+    ///
+    /// This is what makes the simulation worth looking at, and it is the thing
+    /// most easily destroyed by adding damping — hence the guard. Raising
+    /// [`VISCOSITY`] would smooth fronts away; [`APPROACH_DAMPING`] must not,
+    /// because it acts only on relative motion.
+    #[test]
+    fn a_push_travels_through_the_fluid_as_a_front() {
+        const COUNT: usize = 1200;
+        const WIDTH: f32 = 320.;
+        const HEIGHT: f32 = 320.;
+        const IMPULSE_SPEED: f32 = 400.;
+
+        let centre = vec2(WIDTH / 2., HEIGHT / 2.);
+        let mut sim = FluidSim::init(COUNT, WIDTH, HEIGHT, Arc::new(Vec::new()), rng::seeded(31));
+        step(&mut sim, 120);
+
+        for particle in &mut sim.particles {
+            let offset = particle.pos - centre;
+            if offset.length() < 40. {
+                particle.vel = -offset.normalize_or_zero() * IMPULSE_SPEED;
+            }
+        }
+
+        let energy_radius = |sim: &FluidSim| {
+            let (weighted, total) = sim.particles.iter().fold((0., 0.), |(w, t), particle| {
+                let energy = particle.vel.length_squared();
+                (w + energy * particle.pos.distance(centre), t + energy)
+            });
+            weighted / f32::max(total, 1e-6)
+        };
+
+        step(&mut sim, 4);
+        let early = energy_radius(&sim);
+
+        step(&mut sim, 20);
+        let late = energy_radius(&sim);
+        let still_moving = sim
+            .particles
+            .iter()
+            .filter(|particle| particle.vel.length() > IMPULSE_SPEED * 0.03)
+            .count();
+
+        assert!(
+            still_moving * 10 > COUNT,
+            "only {still_moving} of {COUNT} particles are still moving; the push \
+             was absorbed where it landed instead of travelling"
+        );
+        assert!(
+            still_moving * 3 < COUNT * 2,
+            "{still_moving} of {COUNT} particles are moving; the fluid is \
+             agitated as a whole rather than carrying a front"
+        );
+        assert!(
+            late > early,
+            "the disturbance stopped spreading: radius {early:.1} -> {late:.1}"
+        );
+    }
+
+    // ---- obstacle handling -----------------------------------------------
+
+    /// Anywhere off the distance field counts as far outside the obstacle.
+    ///
+    /// Returning zero there is the value meaning "exactly on the surface", so
+    /// every particle beyond the field's coverage reads as touching the
+    /// silhouette. The Bad Apple simulation keeps a margin the field does not
+    /// span, so that is roughly a third of the fluid.
+    #[test]
+    fn sampling_outside_the_field_reads_as_far_from_the_obstacle() {
+        let field = DistanceField::from(&left_half_solid());
+
+        let far = field.sample(vec2(-50., -50.));
+        assert!(far > 0., "off-grid sampled as {far}, which reads as inside");
+        assert!(
+            far > field.sample(vec2(7., 4.)),
+            "off-grid should be further out than anywhere on the grid"
+        );
+        assert!(far.is_finite(), "off-grid must stay finite for gradients");
+
+        assert_eq!(
+            None,
+            field.escape_displacement(vec2(-500., -500.), Vec2::ZERO, vec2(8., 8.)),
+            "a particle far outside the field was displaced"
+        );
+    }
+
+    /// Particles must not wrap the obstacle in a shell.
+    ///
+    /// Escaping by exactly the sampled depth lands every particle on the zero
+    /// level set, and they all land on the *same* one — a one-particle-thick
+    /// skin with an evacuated band behind it, re-pinned on every solver
+    /// iteration.
+    #[test]
+    fn the_obstacle_does_not_build_a_shell() {
+        const COUNT: usize = 2000;
+        const WIDTH: f32 = 500.;
+        const HEIGHT: f32 = 300.;
+        const BAND: f32 = 4.;
+
+        let cells: Vec<bool> = (0..320 * 240)
+            .map(|i| {
+                let (x, y) = ((i % 320) as f32, (i / 320) as f32);
+                ((x - 160.).powi(2) + (y - 120.).powi(2)).sqrt() < 60.
+            })
+            .collect();
+        let field = DistanceField::from(&bitmap(cells, 320, 240));
+
+        let mut sim = FluidSim::init(
+            COUNT,
+            WIDTH,
+            HEIGHT,
+            Arc::new(vec![field.clone()]),
+            rng::seeded(1),
+        );
+        step(&mut sim, 300);
+
+        let (field_pos, field_size) = sim.video_bounds();
+        let pixel = vec2(
+            field_size.x / field.grid.columns() as f32,
+            field_size.y / field.grid.rows() as f32,
+        );
+
+        let band_count = |band: usize| {
+            let (lo, hi) = (band as f32 * BAND, (band + 1) as f32 * BAND);
+            sim.particles
+                .iter()
+                .filter(|p| {
+                    let distance = field.sample((p.pos - field_pos) / pixel) * pixel.x;
+                    distance >= lo && distance < hi
+                })
+                .count()
+        };
+
+        let profile: Vec<usize> = (0..3).map(band_count).collect();
+
+        // No evacuated band immediately behind a populated one.
+        assert!(
+            profile[1] * 4 >= profile[0],
+            "a shell of {} sits against the obstacle with only {} behind it: {profile:?}",
+            profile[0],
+            profile[1]
+        );
+
+        // And nothing left stranded inside the solid region.
+        let inside = sim
+            .particles
+            .iter()
+            .filter(|p| field.sample((p.pos - field_pos) / pixel) < 0.)
+            .count();
+        assert_eq!(0, inside, "{inside} particles are inside the obstacle");
+    }
+
+    // ---- the plain tank --------------------------------------------------
+
+    #[test]
+    fn gravity_pulls_the_fluid_downward() {
+        let mut sim = sim().with_gravity(400.);
+
+        let height = |sim: &FluidSim| {
+            sim.particles.iter().map(|p| p.pos.y).sum::<f32>() / sim.particles.len() as f32
+        };
+
+        let before = height(&sim);
+        step(&mut sim, 120);
+
+        assert!(
+            height(&sim) > before,
+            "the fluid did not fall: {before:.1} -> {:.1}",
+            height(&sim)
+        );
+    }
+
+    #[test]
+    fn without_gravity_the_fluid_does_not_drift_downward() {
+        let mut sim = sim();
+
+        let height = |sim: &FluidSim| {
+            sim.particles.iter().map(|p| p.pos.y).sum::<f32>() / sim.particles.len() as f32
+        };
+
+        let before = height(&sim);
+        step(&mut sim, 120);
+
+        assert!(
+            (height(&sim) - before).abs() < TEST_HEIGHT / 10.,
+            "the fluid drifted from {before:.1} to {:.1} with no gravity",
+            height(&sim)
+        );
+    }
+
+    /// A margin keeps fluid outside the drawn area, so it can travel around
+    /// the video and reach the far side. Without one the whole tank is drawn,
+    /// walls included.
+    #[test]
+    fn the_margin_sets_what_is_drawn() {
+        let mut bordered = sim();
+        let mut full = sim().with_margin(0.);
+
+        let mut canvas = RecordingCanvas::new();
+        bordered.draw(&mut canvas);
+        let (pos, size) = canvas.view().unwrap();
+        assert_eq!(vec2(OBSTACLE_BORDER, OBSTACLE_BORDER), pos);
+        assert_eq!(
+            vec2(
+                TEST_WIDTH - OBSTACLE_BORDER * 2.,
+                TEST_HEIGHT - OBSTACLE_BORDER * 2.
+            ),
+            size
+        );
+
+        let mut canvas = RecordingCanvas::new();
+        full.draw(&mut canvas);
+        assert_eq!(
+            Some((Vec2::ZERO, vec2(TEST_WIDTH, TEST_HEIGHT))),
+            canvas.view()
+        );
     }
 }
