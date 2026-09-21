@@ -331,8 +331,15 @@ impl MacroquadAudio {
 
 impl Audio for MacroquadAudio {
     fn play(&mut self, sound: SoundId, looped: bool) {
+        let sound = self.sound(sound);
+
+        // macroquad's `play_sound` starts another voice rather than restarting
+        // the existing one, so calling it twice layers a sound over itself.
+        // Stopping first is what makes this method mean what it says.
+        mq_audio::stop_sound(sound);
+
         mq_audio::play_sound(
-            self.sound(sound),
+            sound,
             mq_audio::PlaySoundParams {
                 looped,
                 volume: 1.0,

@@ -13,7 +13,10 @@ pub struct SoundId(pub(crate) usize);
 /// not expose it, so anything that has to stay in step with a sound has to run
 /// off the same wall clock rather than off the sound itself.
 pub trait Audio {
-    /// Starts a sound, restarting it if already playing.
+    /// Starts a sound from the beginning.
+    ///
+    /// If it is already playing it restarts rather than layering: one call to
+    /// `play` means one voice, however many times it is called.
     fn play(&mut self, sound: SoundId, looped: bool);
 
     fn stop(&mut self, sound: SoundId);
@@ -121,6 +124,24 @@ mod tests {
 
         assert!(!audio.is_playing(SoundId(0)));
         assert!(audio.is_playing(SoundId(1)));
+    }
+
+    #[test]
+    fn replaying_a_sound_leaves_it_playing_once() {
+        let mut audio = RecordingAudio::new();
+
+        audio.play(SoundId(0), true);
+        audio.play(SoundId(0), true);
+
+        // The contract is one voice per sound; a backend that starts a second
+        // without stopping the first layers the track over itself.
+        assert!(audio.is_playing(SoundId(0)));
+
+        audio.stop(SoundId(0));
+        assert!(
+            !audio.is_playing(SoundId(0)),
+            "one stop should silence it, not peel off a single layer"
+        );
     }
 
     #[test]
